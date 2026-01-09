@@ -134,7 +134,7 @@ def create_printable_sheet(grid_data, color_map, width, height):
     # 配置
     cell_size = 30
     margin = 50
-    # 【修改】不再保留右侧图例区域，只保留网格
+    # 不再保留右侧图例区域
     img_width = margin * 2 + width * cell_size 
     img_height = margin * 2 + height * cell_size
     
@@ -173,14 +173,13 @@ def create_printable_sheet(grid_data, color_map, width, height):
         line_y = margin + i * cell_size
         draw.line([(margin, line_y), (margin + width * cell_size, line_y)], fill="black", width=2)
 
-    # 【修改】不再绘制右侧图例列表
-    
     return sheet
 
 # --- 主程序 ---
 st.set_page_config(page_title="拼豆生成器", layout="wide")
 st.title("🧩 专业版拼豆图纸生成器 (完整 Mard 色卡)")
 
+# 初始化 Session State
 if 'result_grid' not in st.session_state:
     st.session_state.result_grid = None
 if 'result_stats' not in st.session_state:
@@ -188,8 +187,19 @@ if 'result_stats' not in st.session_state:
 if 'result_dims' not in st.session_state:
     st.session_state.result_dims = (0, 0)
 
+# 【关键功能】回调函数：当上传的文件变化时，清空之前的结果
+def reset_results():
+    st.session_state.result_grid = None
+    st.session_state.result_stats = None
+    st.session_state.result_dims = (0, 0)
+
 st.sidebar.header("1. 上传图片")
-uploaded_file = st.sidebar.file_uploader("支持 JPG/PNG/WEBP", type=["jpg", "png", "jpeg", "webp"])
+# 【修复点】添加 on_change=reset_results
+uploaded_file = st.sidebar.file_uploader(
+    "支持 JPG/PNG/WEBP", 
+    type=["jpg", "png", "jpeg", "webp"],
+    on_change=reset_results 
+)
 
 st.sidebar.header("2. 生成设置")
 use_rembg = st.sidebar.checkbox("启用智能抠图 (去除背景)", value=False)
@@ -263,6 +273,7 @@ if uploaded_file:
             st.session_state.result_stats = color_usage
             st.session_state.result_dims = (target_width, target_height)
 
+    # 只有当 Session State 里有数据（且没有被清空）时，才显示结果
     if st.session_state.result_grid is not None:
         st.markdown("---")
         st.subheader("🎨 步骤二：生成结果")
@@ -282,7 +293,6 @@ if uploaded_file:
                 for cell in row:
                     if cell:
                         short_name = cell['name'].replace("Mard ", "")
-                        # 【新增】格式化 RGB 字符串
                         rgb_str = f"RGB{cell['color']}"
                         tooltip = f"{short_name}  {rgb_str}"
                         
@@ -307,6 +317,7 @@ if uploaded_file:
                     justify-content: center;
                     padding-top: 50px;
                     padding-bottom: 50px;
+                    overflow-x: auto;
                 }}
                 .pixel-grid {{
                     border-collapse: collapse;
@@ -315,6 +326,7 @@ if uploaded_file:
                 }}
                 .pixel-cell {{
                     width: 20px;
+                    min-width: 20px;
                     height: 20px;
                     border: 1px solid #ddd;
                     position: relative;
@@ -372,4 +384,7 @@ if uploaded_file:
             printable_img.save(buf, format="JPEG", quality=100)
             st.download_button("📥 下载图纸 (JPG)", data=buf.getvalue(), file_name="pattern_grid.jpg", mime="image/jpeg")
 else:
+    # 如果没有上传文件，这里也可以加个重置，确保干净
+    if st.session_state.result_grid is not None:
+         reset_results()
     st.info("👈 请先在左侧侧边栏上传一张图片")
