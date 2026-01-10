@@ -1,9 +1,8 @@
 import streamlit as st
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 import io
-import os
 
-# --- 依赖库检测 (可选功能) ---
+# 尝试导入高级库
 try:
     from rembg import remove
     HAS_REMBG = True
@@ -16,8 +15,9 @@ try:
 except ImportError:
     HAS_CROPPER = False
 
-# --- 1. MARD 色卡数据 (完整保留) ---
+# --- 1. 定义高级色卡 (完整 Mard 官方色卡数据) ---
 MARD_PALETTE = {
+    # --- A 系列 (黄色/暖色系) ---
     "Mard A1": (250, 245, 205), "Mard A2": (252, 254, 214), "Mard A3": (255, 255, 146),
     "Mard A4": (247, 236, 92),  "Mard A5": (255, 228, 75),  "Mard A6": (253, 169, 81),
     "Mard A7": (250, 140, 79),  "Mard A8": (249, 224, 69),  "Mard A9": (249, 156, 95),
@@ -27,6 +27,8 @@ MARD_PALETTE = {
     "Mard A19": (253, 126, 119), "Mard A20": (249, 214, 110), "Mard A21": (250, 227, 147),
     "Mard A22": (237, 248, 120), "Mard A23": (225, 201, 189), "Mard A24": (243, 246, 169),
     "Mard A25": (254, 215, 133), "Mard A26": (254, 200, 50),
+
+    # --- B 系列 (绿色系) ---
     "Mard B1": (223, 241, 57),  "Mard B2": (100, 243, 67),  "Mard B3": (159, 246, 133),
     "Mard B4": (95, 223, 52),   "Mard B5": (57, 225, 88),   "Mard B6": (64, 244, 164),
     "Mard B7": (63, 174, 124),  "Mard B8": (29, 158, 84),   "Mard B9": (42, 80, 55),
@@ -38,6 +40,8 @@ MARD_PALETTE = {
     "Mard B25": (78, 132, 109),  "Mard B26": (144, 124, 53),  "Mard B27": (208, 224, 175),
     "Mard B28": (158, 229, 187), "Mard B29": (198, 223, 95),  "Mard B30": (227, 251, 177),
     "Mard B31": (178, 230, 148), "Mard B32": (146, 173, 96),
+
+    # --- C 系列 (蓝色系) ---
     "Mard C1": (255, 254, 228), "Mard C2": (171, 248, 254), "Mard C3": (158, 224, 248),
     "Mard C4": (68, 205, 251),  "Mard C5": (6, 171, 227),   "Mard C6": (84, 167, 233),
     "Mard C7": (57, 119, 204),  "Mard C8": (15, 82, 189),   "Mard C9": (51, 73, 195),
@@ -48,6 +52,8 @@ MARD_PALETTE = {
     "Mard C22": (107, 177, 187), "Mard C23": (200, 226, 249), "Mard C24": (126, 197, 249),
     "Mard C25": (169, 232, 224), "Mard C26": (66, 173, 209),  "Mard C27": (208, 222, 239),
     "Mard C28": (189, 206, 237), "Mard C29": (54, 74, 137),
+
+    # --- D 系列 (紫/深蓝系) ---
     "Mard D1": (172, 183, 239), "Mard D2": (134, 141, 211), "Mard D3": (54, 83, 175),
     "Mard D4": (22, 44, 126),   "Mard D5": (179, 78, 198),  "Mard D6": (119, 23, 122),
     "Mard D7": (135, 88, 169),  "Mard D8": (227, 210, 254), "Mard D9": (214, 186, 245),
@@ -57,6 +63,8 @@ MARD_PALETTE = {
     "Mard D19": (216, 194, 217), "Mard D20": (156, 52, 173), "Mard D21": (148, 5, 149),
     "Mard D22": (56, 57, 149),  "Mard D23": (250, 219, 248), "Mard D24": (118, 138, 225),
     "Mard D25": (73, 80, 194),  "Mard D26": (214, 198, 235),
+
+    # --- E 系列 (粉/紫红色系) ---
     "Mard E1": (246, 212, 203), "Mard E2": (252, 193, 221), "Mard E3": (246, 189, 232),
     "Mard E4": (233, 99, 158),  "Mard E5": (241, 85, 159),  "Mard E6": (236, 64, 114),
     "Mard E7": (198, 54, 116),  "Mard E8": (253, 219, 233), "Mard E9": (229, 117, 199),
@@ -65,6 +73,8 @@ MARD_PALETTE = {
     "Mard E16": (251, 244, 236), "Mard E17": (247, 227, 236), "Mard E18": (251, 203, 219),
     "Mard E19": (246, 187, 209), "Mard E20": (215, 198, 206), "Mard E21": (192, 157, 164),
     "Mard E22": (181, 139, 159), "Mard E23": (147, 125, 138), "Mard E24": (222, 190, 229),
+
+    # --- F 系列 (红/棕色系) ---
     "Mard F1": (255, 146, 128), "Mard F2": (247, 61, 72),   "Mard F3": (239, 77, 62),
     "Mard F4": (249, 43, 64),   "Mard F5": (227, 3, 40),    "Mard F6": (145, 54, 53),
     "Mard F7": (145, 25, 50),   "Mard F8": (187, 1, 38),    "Mard F9": (224, 103, 122),
@@ -74,6 +84,8 @@ MARD_PALETTE = {
     "Mard F19": (190, 69, 74),  "Mard F20": (198, 148, 149), "Mard F21": (242, 187, 198),
     "Mard F22": (247, 195, 208), "Mard F23": (236, 128, 109), "Mard F24": (224, 157, 175),
     "Mard F25": (232, 72, 84),
+
+    # --- G 系列 (肤色/大地色系) ---
     "Mard G1": (255, 228, 211), "Mard G2": (252, 198, 172), "Mard G3": (241, 196, 165),
     "Mard G4": (220, 179, 135), "Mard G5": (231, 179, 78),  "Mard G6": (242, 120, 36),
     "Mard G7": (152, 80, 58),   "Mard G8": (75, 43, 28),    "Mard G9": (139, 122, 133),
@@ -81,6 +93,8 @@ MARD_PALETTE = {
     "Mard G13": (178, 113, 75), "Mard G14": (139, 104, 76), "Mard G15": (242, 248, 227),
     "Mard G16": (242, 216, 193), "Mard G17": (121, 84, 78), "Mard G18": (255, 228, 214),
     "Mard G19": (221, 125, 65), "Mard G20": (165, 69, 47),  "Mard G21": (179, 133, 97),
+
+    # --- H 系列 (灰度/黑白) ---
     "Mard H1": (251, 251, 251), "Mard H2": (255, 255, 255), "Mard H3": (180, 180, 180),
     "Mard H4": (135, 135, 135), "Mard H5": (70, 70, 72),    "Mard H6": (44, 44, 44),
     "Mard H7": (23, 23, 23),    "Mard H8": (231, 214, 220), "Mard H9": (239, 237, 238),
@@ -89,6 +103,8 @@ MARD_PALETTE = {
     "Mard H16": (27, 18, 19),   "Mard H17": (240, 238, 239), "Mard H18": (252, 255, 248),
     "Mard H19": (242, 238, 229), "Mard H20": (150, 160, 159), "Mard H21": (248, 251, 230),
     "Mard H22": (202, 202, 218), "Mard H23": (155, 156, 148),
+
+    # --- M 系列 (莫兰迪/低饱和系) ---
     "Mard M1": (187, 198, 182), "Mard M2": (144, 153, 148), "Mard M3": (105, 126, 128),
     "Mard M4": (224, 212, 188), "Mard M5": (208, 203, 174), "Mard M6": (176, 170, 134),
     "Mard M7": (176, 167, 150), "Mard M8": (174, 128, 130), "Mard M9": (168, 135, 100),
@@ -96,10 +112,7 @@ MARD_PALETTE = {
     "Mard M13": (199, 146, 102), "Mard M14": (195, 116, 99), "Mard M15": (116, 125, 122),
 }
 
-# --- 2. 核心算法函数 ---
-
 def find_closest_color(pixel):
-    """计算像素点与 Mard 色卡中最接近的颜色"""
     if len(pixel) == 4 and pixel[3] < 128:
         return None, (255, 255, 255, 0)
     
@@ -109,7 +122,7 @@ def find_closest_color(pixel):
     r, g, b = pixel[:3]
 
     for name, (cr, cg, cb) in MARD_PALETTE.items():
-        # 使用加权欧氏距离，使颜色匹配更符合人眼感知
+        # 加权欧几里得距离，提升人眼感知准确度
         dist = ((r - cr)*0.30)**2 + ((g - cg)*0.59)**2 + ((b - cb)*0.11)**2
         if dist < min_dist:
             min_dist = dist
@@ -117,215 +130,261 @@ def find_closest_color(pixel):
             closest_rgb = (cr, cg, cb)
     return closest_name, closest_rgb
 
-def create_printable_sheet(grid_data, width, height):
-    """生成带网格线和坐标的打印图纸"""
+def create_printable_sheet(grid_data, color_map, width, height):
+    # 配置
     cell_size = 30
     margin = 50
-    coord_offset_x = 30 
-    coord_offset_y = 30
-    
-    img_width = margin * 2 + width * cell_size + coord_offset_x
-    img_height = margin * 2 + height * cell_size + coord_offset_y
+    # 不再保留右侧图例区域
+    img_width = margin * 2 + width * cell_size 
+    img_height = margin * 2 + height * cell_size
     
     sheet = Image.new("RGB", (img_width, img_height), "white")
     draw = ImageDraw.Draw(sheet)
     
-    grid_start_x = margin + coord_offset_x
-    grid_start_y = margin + coord_offset_y
-
-    # 绘制 X 轴坐标
-    for x in range(width):
-        text = str(x + 1)
-        text_pos_x = grid_start_x + x * cell_size + (10 if len(text) == 1 else 5) 
-        text_pos_y = margin 
-        draw.text((text_pos_x, text_pos_y), text, fill="black")
-
-    # 绘制 Y 轴坐标
-    for y in range(height):
-        text = str(y + 1)
-        text_pos_x = margin
-        text_pos_y = grid_start_y + y * cell_size + 8
-        draw.text((text_pos_x, text_pos_y), text, fill="black")
-
-    # 填充颜色格子
+    # 绘制网格
     for y, row in enumerate(grid_data):
         for x, cell in enumerate(row):
-            top_left_x = grid_start_x + x * cell_size
-            top_left_y = grid_start_y + y * cell_size
+            top_left_x = margin + x * cell_size
+            top_left_y = margin + y * cell_size
             bottom_right_x = top_left_x + cell_size
             bottom_right_y = top_left_y + cell_size
             
             if cell:
-                # 绘制色块
+                # 填充颜色
                 draw.rectangle([top_left_x, top_left_y, bottom_right_x, bottom_right_y], fill=cell['color'], outline="lightgray")
-                # 绘制色号文字
-                full_name = cell['name']
-                short_code = full_name.replace("Mard ", "") 
-                # 根据背景亮度自动调整文字颜色
+                
+                # 提取色号 (去除 "Mard " 前缀)
+                full_name = cell['name'] # "Mard A13"
+                short_code = full_name.replace("Mard ", "") # "A13"
+                
+                # 智能判断文字颜色
                 text_color = "black" if (cell['color'][0]*0.299 + cell['color'][1]*0.587 + cell['color'][2]*0.114) > 150 else "white"
+                
+                # 绘制色号
                 draw.text((top_left_x + 3, top_left_y + 8), short_code, fill=text_color)
             else:
-                # 空白处
                 draw.rectangle([top_left_x, top_left_y, bottom_right_x, bottom_right_y], fill="white", outline="lightgray")
 
-    # 绘制加粗的 10 格分割线 (方便数格子)
+    # 绘制10x10粗线
     for i in range(0, width + 1, 10):
-        line_x = grid_start_x + i * cell_size
-        draw.line([(line_x, margin), (line_x, img_height - margin)], fill="black", width=2)
-    
+        line_x = margin + i * cell_size
+        draw.line([(line_x, margin), (line_x, margin + height * cell_size)], fill="black", width=2)
     for i in range(0, height + 1, 10):
-        line_y = grid_start_y + i * cell_size
-        draw.line([(margin, line_y), (img_width - margin, line_y)], fill="black", width=2)
+        line_y = margin + i * cell_size
+        draw.line([(margin, line_y), (margin + width * cell_size, line_y)], fill="black", width=2)
 
     return sheet
 
-# --- 3. 主程序逻辑 ---
+# --- 主程序 ---
+st.set_page_config(page_title="拼豆生成器", layout="wide")
+st.title("🧩 专业版拼豆图纸生成器 (完整 Mard 色卡)")
 
-st.set_page_config(page_title="拼豆图纸工坊", layout="wide", page_icon="🧩")
+# 初始化 Session State
+if 'result_grid' not in st.session_state:
+    st.session_state.result_grid = None
+if 'result_stats' not in st.session_state:
+    st.session_state.result_stats = None
+if 'result_dims' not in st.session_state:
+    st.session_state.result_dims = (0, 0)
 
-st.title("🧩 拼豆图纸生成器 (Mard 专业色系)")
-st.markdown("上传一张图片，自动转换为 Mard 2.6mm 拼豆色号图纸，支持在线预览和打印下载。")
+# 【关键功能】回调函数：当上传的文件变化时，清空之前的结果
+def reset_results():
+    st.session_state.result_grid = None
+    st.session_state.result_stats = None
+    st.session_state.result_dims = (0, 0)
 
-if 'pindou_grid' not in st.session_state:
-    st.session_state.pindou_grid = None
-    st.session_state.pindou_dims = (0, 0)
-    st.session_state.last_uploaded_name = ""
-
-def reset_pindou():
-    st.session_state.pindou_grid = None
-    st.session_state.pindou_dims = (0, 0)
-
-# --- 侧边栏设置 ---
 st.sidebar.header("1. 上传图片")
-uploaded_file = st.sidebar.file_uploader("支持 JPG/PNG/WEBP", type=["jpg", "png", "jpeg", "webp"], on_change=reset_pindou)
+# 【修复点】添加 on_change=reset_results
+uploaded_file = st.sidebar.file_uploader(
+    "支持 JPG/PNG/WEBP", 
+    type=["jpg", "png", "jpeg", "webp"],
+    on_change=reset_results 
+)
 
 st.sidebar.header("2. 生成设置")
-use_rembg = st.sidebar.checkbox("启用智能抠图 (去除背景)", value=False, help="如果图片背景杂乱，勾选此项可以自动把背景变成白色")
-target_width = st.sidebar.slider("目标宽度 (单位: 豆/格)", 10, 100, 40, help="决定图纸的大小。数值越大，细节越好，但拼起来越累。")
-generate_btn = st.sidebar.button("🚀 开始生成图纸", type="primary")
+use_rembg = st.sidebar.checkbox("启用智能抠图 (去除背景)", value=False)
+target_width = st.sidebar.slider("目标宽度 (格/豆)", 10, 100, 40)
+generate_btn = st.sidebar.button("🚀 开始生成图纸")
 
-# --- 核心流程 ---
+if use_rembg and not HAS_REMBG:
+    st.sidebar.error("⚠️ 未安装 rembg 库")
+
 if uploaded_file:
-    # 1. 图片加载与预处理
     original_image = Image.open(uploaded_file).convert("RGBA")
     
-    col1, col2 = st.columns([1, 2])
+    st.subheader("🖼️ 步骤一：图片准备")
+    enable_crop = st.checkbox("✂️ 启用手动裁剪 (Enable Cropping)", value=False)
     
-    with col1:
-        st.subheader("🖼️ 图片预览")
-        st.caption("需要裁剪吗？如果安装了裁剪插件，可以在这里拖动框选：")
-        
-        final_processing_img = original_image
-        
-        if HAS_CROPPER:
-            # 只有安装了 streamlit-cropper 才会显示裁剪框
-            cropped_img = st_cropper(original_image, realtime_update=True, box_color='#8B1A1A', aspect_ratio=None)
-            st.image(cropped_img, caption="将要使用的图片区域", width=200)
-            final_processing_img = cropped_img
-        else:
-            st.image(original_image, caption="原始图片", use_container_width=True)
+    final_processing_img = original_image
 
-    # 2. 点击生成后的计算
+    if enable_crop and HAS_CROPPER:
+        st.caption("请在红框内拖动选择区域：")
+        display_width = 800
+        if original_image.width < display_width:
+            aspect = original_image.height / original_image.width
+            new_height = int(display_width * aspect)
+            editing_image = original_image.resize((display_width, new_height), Image.NEAREST)
+        else:
+            editing_image = original_image
+        
+        cropped_img = st_cropper(editing_image, realtime_update=True, box_color='#8B1A1A', aspect_ratio=None)
+        st.image(cropped_img, caption="裁剪预览", width=150)
+        final_processing_img = cropped_img
+    else:
+        st.image(original_image, caption="完整原图预览", width=300)
+
     if generate_btn:
-        with st.spinner("正在分析颜色并匹配 Mard 色号..."):
+        with st.spinner("正在匹配 200+ 种 Mard 颜色..."):
             img_to_process = final_processing_img
-            
-            # 智能抠图
             if use_rembg and HAS_REMBG:
                 try:
                     img_to_process = remove(img_to_process)
                 except Exception as e:
-                    st.error(f"抠图服务暂不可用: {e}")
+                    st.error(f"抠图出错: {e}")
 
-            # 调整尺寸 (像素化)
             aspect_ratio = img_to_process.height / img_to_process.width
             target_height = int(target_width * aspect_ratio)
             
-            if hasattr(Image, 'Resample'): resample_method = Image.Resample.BILINEAR
-            else: resample_method = Image.BILINEAR
+            if hasattr(Image, 'Resample'):
+                resample_method = Image.Resample.BILINEAR
+            else:
+                resample_method = Image.BILINEAR
             
             small_img = img_to_process.resize((target_width, target_height), resample_method)
             
-            # 颜色量化匹配
             pixel_data = small_img.load()
             grid_data = []
-            
+            color_usage = {}
+
             for y in range(target_height):
                 row = []
                 for x in range(target_width):
                     pixel = pixel_data[x, y]
                     c_name, c_rgb = find_closest_color(pixel)
                     
-                    if c_name: 
+                    if c_name:
+                        color_usage[c_name] = color_usage.get(c_name, 0) + 1
                         row.append({'color': c_rgb, 'name': c_name, 'hex': '#%02x%02x%02x' % c_rgb})
-                    else: 
-                        row.append(None) # 透明像素
+                    else:
+                        row.append(None)
                 grid_data.append(row)
             
-            # 保存结果到 Session
-            st.session_state.pindou_grid = grid_data
-            st.session_state.pindou_dims = (target_width, target_height)
-            st.session_state.last_uploaded_name = uploaded_file.name
+            st.session_state.result_grid = grid_data
+            st.session_state.result_stats = color_usage
+            st.session_state.result_dims = (target_width, target_height)
 
-    # 3. 结果展示区
-    if st.session_state.pindou_grid is not None:
-        with col2:
-            st.subheader("🎨 生成结果")
-            grid_data = st.session_state.pindou_grid
-            t_w, t_h = st.session_state.pindou_dims
+    # 只有当 Session State 里有数据（且没有被清空）时，才显示结果
+    if st.session_state.result_grid is not None:
+        st.markdown("---")
+        st.subheader("🎨 步骤二：生成结果")
+        
+        grid_data = st.session_state.result_grid
+        color_usage = st.session_state.result_stats
+        t_w, t_h = st.session_state.result_dims
+
+        t1, t2 = st.tabs(["🖼️ 交互式网格图 (Web)", "🖨️ 打印用高清图纸 (JPG)"])
+
+        with t1:
+            st.caption("👇 鼠标移动到格子上，会立即显示色号与RGB数值。")
             
-            tab1, tab2 = st.tabs(["🌐 网页交互视图", "📄 打印版高清大图"])
-            
-            with tab1:
-                # 生成 HTML 表格用于网页展示 (带鼠标悬停提示)
-                html_rows = "<tr><td class='coord-cell'></td>"
-                for x in range(t_w): html_rows += f"<td class='coord-cell'>{x+1}</td>"
+            html_rows = ""
+            for row in grid_data:
+                html_rows += "<tr>"
+                for cell in row:
+                    if cell:
+                        short_name = cell['name'].replace("Mard ", "")
+                        rgb_str = f"RGB{cell['color']}"
+                        tooltip = f"{short_name}  {rgb_str}"
+                        
+                        html_rows += f'<td class="pixel-cell" style="background-color: {cell["hex"]};" data-name="{tooltip}"></td>'
+                    else:
+                        html_rows += '<td class="pixel-cell empty"></td>'
                 html_rows += "</tr>"
-                
-                for y, row in enumerate(grid_data):
-                    html_rows += "<tr>"
-                    html_rows += f"<td class='coord-cell'>{y+1}</td>"
-                    for cell in row:
-                        if cell:
-                            short_name = cell['name'].replace("Mard ", "")
-                            tooltip = f"{short_name} | {cell['name']}"
-                            html_rows += f'<td class="pixel-cell" style="background-color: {cell["hex"]};" title="{tooltip}"></td>'
-                        else: 
-                            html_rows += '<td class="pixel-cell empty"></td>'
-                    html_rows += "</tr>"
-                
-                html_content = f"""
-                <style>
-                    .pixel-grid {{ border-collapse: collapse; }}
-                    .pixel-cell {{ width: 18px; height: 18px; border: 1px solid #eee; }}
-                    .pixel-cell:hover {{ border: 2px solid #333; cursor: crosshair; }}
-                    .pixel-cell.empty {{ background-color: #fcfcfc; border: 1px dashed #eee; }}
-                    .coord-cell {{ width: 18px; height: 18px; background: #f0f0f0; font-size: 9px; text-align: center; color: #666; }}
-                </style>
-                <div style="overflow-x: auto; padding: 10px;">
-                    <table class="pixel-grid">{html_rows}</table>
-                </div>
-                """
-                st.components.v1.html(html_content, height=600, scrolling=True)
-            
-            with tab2:
-                # 生成可供下载的图片
-                printable_img = create_printable_sheet(grid_data, t_w, t_h)
-                st.image(printable_img, caption="可直接打印的色号图纸", use_container_width=True)
-                
-                # 下载按钮
-                buf = io.BytesIO()
-                printable_img.save(buf, format="JPEG", quality=100)
-                file_root = os.path.splitext(st.session_state.last_uploaded_name)[0]
-                download_name = f"{file_root}_pixel_art.jpg"
-                
-                st.download_button(
-                    label="📥 下载高清图纸 (JPG)",
-                    data=buf.getvalue(),
-                    file_name=download_name,
-                    mime="image/jpeg",
-                    type="primary"
-                )
 
+            html_content = f"""
+            <!DOCTYPE html>
+            <html>
+            <head>
+            <style>
+                body {{
+                    background-color: #ffffff !important;
+                    margin: 0;
+                    padding: 20px;
+                    font-family: sans-serif;
+                }}
+                .container {{
+                    display: flex;
+                    justify-content: center;
+                    padding-top: 50px;
+                    padding-bottom: 50px;
+                    overflow-x: auto;
+                }}
+                .pixel-grid {{
+                    border-collapse: collapse;
+                    background-color: white;
+                    box-shadow: 0 0 10px rgba(0,0,0,0.1);
+                }}
+                .pixel-cell {{
+                    width: 20px;
+                    min-width: 20px;
+                    height: 20px;
+                    border: 1px solid #ddd;
+                    position: relative;
+                }}
+                .pixel-cell.empty {{
+                    background-color: #f8f8f8;
+                    border: 1px dashed #eee;
+                }}
+                .pixel-cell:hover::after {{
+                    content: attr(data-name);
+                    position: absolute;
+                    bottom: 110%;
+                    left: 50%;
+                    transform: translateX(-50%);
+                    background-color: #333;
+                    color: #fff;
+                    padding: 5px 10px;
+                    border-radius: 4px;
+                    font-size: 12px;
+                    white-space: nowrap;
+                    z-index: 999;
+                    pointer-events: none;
+                }}
+                .pixel-cell:hover::before {{
+                    content: '';
+                    position: absolute;
+                    bottom: 90%;
+                    left: 50%;
+                    transform: translateX(-50%);
+                    border-width: 6px;
+                    border-style: solid;
+                    border-color: #333 transparent transparent transparent;
+                    z-index: 999;
+                }}
+            </style>
+            </head>
+            <body>
+                <div class="container">
+                    <table class="pixel-grid">
+                        {html_rows}
+                    </table>
+                </div>
+            </body>
+            </html>
+            """
+            
+            calc_height = max(500, t_h * 24 + 150)
+            st.components.v1.html(html_content, height=calc_height, scrolling=True)
+
+        with t2:
+            printable_img = create_printable_sheet(grid_data, color_usage, t_w, t_h)
+            st.image(printable_img, caption="纯净版网格图纸 (无图例)", use_container_width=True)
+            
+            buf = io.BytesIO()
+            printable_img.save(buf, format="JPEG", quality=100)
+            st.download_button("📥 下载图纸 (JPG)", data=buf.getvalue(), file_name="pattern_grid.jpg", mime="image/jpeg")
 else:
-    st.info("👈 请在左侧侧边栏上传图片开始制作")
+    # 如果没有上传文件，这里也可以加个重置，确保干净
+    if st.session_state.result_grid is not None:
+         reset_results()
+    st.info("👈 请先在左侧侧边栏上传一张图片")
