@@ -2,7 +2,8 @@ import streamlit as st
 from PIL import Image, ImageDraw, ImageFont
 import io
 import time
-import os  # 用于文件名处理
+import os
+import tempfile
 
 # --- 依赖库检测 ---
 try:
@@ -17,16 +18,15 @@ try:
 except ImportError:
     HAS_CROPPER = False
 
+# 检测 Hugging Face
 try:
-    import torch
-    from torchvision import transforms
-    HAS_TORCH = True
+    from huggingface_hub import InferenceClient
+    HAS_HF = True
 except ImportError:
-    HAS_TORCH = False
+    HAS_HF = False
 
 # --- 1. MARD 色卡数据 (拼豆功能用) ---
 MARD_PALETTE = {
-    # --- A 系列 ---
     "Mard A1": (250, 245, 205), "Mard A2": (252, 254, 214), "Mard A3": (255, 255, 146),
     "Mard A4": (247, 236, 92),  "Mard A5": (255, 228, 75),  "Mard A6": (253, 169, 81),
     "Mard A7": (250, 140, 79),  "Mard A8": (249, 224, 69),  "Mard A9": (249, 156, 95),
@@ -36,7 +36,6 @@ MARD_PALETTE = {
     "Mard A19": (253, 126, 119), "Mard A20": (249, 214, 110), "Mard A21": (250, 227, 147),
     "Mard A22": (237, 248, 120), "Mard A23": (225, 201, 189), "Mard A24": (243, 246, 169),
     "Mard A25": (254, 215, 133), "Mard A26": (254, 200, 50),
-    # --- B 系列 ---
     "Mard B1": (223, 241, 57),  "Mard B2": (100, 243, 67),  "Mard B3": (159, 246, 133),
     "Mard B4": (95, 223, 52),   "Mard B5": (57, 225, 88),   "Mard B6": (64, 244, 164),
     "Mard B7": (63, 174, 124),  "Mard B8": (29, 158, 84),   "Mard B9": (42, 80, 55),
@@ -48,7 +47,6 @@ MARD_PALETTE = {
     "Mard B25": (78, 132, 109),  "Mard B26": (144, 124, 53),  "Mard B27": (208, 224, 175),
     "Mard B28": (158, 229, 187), "Mard B29": (198, 223, 95),  "Mard B30": (227, 251, 177),
     "Mard B31": (178, 230, 148), "Mard B32": (146, 173, 96),
-    # --- C 系列 ---
     "Mard C1": (255, 254, 228), "Mard C2": (171, 248, 254), "Mard C3": (158, 224, 248),
     "Mard C4": (68, 205, 251),  "Mard C5": (6, 171, 227),   "Mard C6": (84, 167, 233),
     "Mard C7": (57, 119, 204),  "Mard C8": (15, 82, 189),   "Mard C9": (51, 73, 195),
@@ -59,7 +57,6 @@ MARD_PALETTE = {
     "Mard C22": (107, 177, 187), "Mard C23": (200, 226, 249), "Mard C24": (126, 197, 249),
     "Mard C25": (169, 232, 224), "Mard C26": (66, 173, 209),  "Mard C27": (208, 222, 239),
     "Mard C28": (189, 206, 237), "Mard C29": (54, 74, 137),
-    # --- D 系列 ---
     "Mard D1": (172, 183, 239), "Mard D2": (134, 141, 211), "Mard D3": (54, 83, 175),
     "Mard D4": (22, 44, 126),   "Mard D5": (179, 78, 198),  "Mard D6": (119, 23, 122),
     "Mard D7": (135, 88, 169),  "Mard D8": (227, 210, 254), "Mard D9": (214, 186, 245),
@@ -69,7 +66,6 @@ MARD_PALETTE = {
     "Mard D19": (216, 194, 217), "Mard D20": (156, 52, 173), "Mard D21": (148, 5, 149),
     "Mard D22": (56, 57, 149),  "Mard D23": (250, 219, 248), "Mard D24": (118, 138, 225),
     "Mard D25": (73, 80, 194),  "Mard D26": (214, 198, 235),
-    # --- E 系列 ---
     "Mard E1": (246, 212, 203), "Mard E2": (252, 193, 221), "Mard E3": (246, 189, 232),
     "Mard E4": (233, 99, 158),  "Mard E5": (241, 85, 159),  "Mard E6": (236, 64, 114),
     "Mard E7": (198, 54, 116),  "Mard E8": (253, 219, 233), "Mard E9": (229, 117, 199),
@@ -78,7 +74,6 @@ MARD_PALETTE = {
     "Mard E16": (251, 244, 236), "Mard E17": (247, 227, 236), "Mard E18": (251, 203, 219),
     "Mard E19": (246, 187, 209), "Mard E20": (215, 198, 206), "Mard E21": (192, 157, 164),
     "Mard E22": (181, 139, 159), "Mard E23": (147, 125, 138), "Mard E24": (222, 190, 229),
-    # --- F 系列 ---
     "Mard F1": (255, 146, 128), "Mard F2": (247, 61, 72),   "Mard F3": (239, 77, 62),
     "Mard F4": (249, 43, 64),   "Mard F5": (227, 3, 40),    "Mard F6": (145, 54, 53),
     "Mard F7": (145, 25, 50),   "Mard F8": (187, 1, 38),    "Mard F9": (224, 103, 122),
@@ -88,7 +83,6 @@ MARD_PALETTE = {
     "Mard F19": (190, 69, 74),  "Mard F20": (198, 148, 149), "Mard F21": (242, 187, 198),
     "Mard F22": (247, 195, 208), "Mard F23": (236, 128, 109), "Mard F24": (224, 157, 175),
     "Mard F25": (232, 72, 84),
-    # --- G 系列 ---
     "Mard G1": (255, 228, 211), "Mard G2": (252, 198, 172), "Mard G3": (241, 196, 165),
     "Mard G4": (220, 179, 135), "Mard G5": (231, 179, 78),  "Mard G6": (242, 120, 36),
     "Mard G7": (152, 80, 58),   "Mard G8": (75, 43, 28),    "Mard G9": (139, 122, 133),
@@ -96,7 +90,6 @@ MARD_PALETTE = {
     "Mard G13": (178, 113, 75), "Mard G14": (139, 104, 76), "Mard G15": (242, 248, 227),
     "Mard G16": (242, 216, 193), "Mard G17": (121, 84, 78), "Mard G18": (255, 228, 214),
     "Mard G19": (221, 125, 65), "Mard G20": (165, 69, 47),  "Mard G21": (179, 133, 97),
-    # --- H 系列 ---
     "Mard H1": (251, 251, 251), "Mard H2": (255, 255, 255), "Mard H3": (180, 180, 180),
     "Mard H4": (135, 135, 135), "Mard H5": (70, 70, 72),    "Mard H6": (44, 44, 44),
     "Mard H7": (23, 23, 23),    "Mard H8": (231, 214, 220), "Mard H9": (239, 237, 238),
@@ -105,7 +98,6 @@ MARD_PALETTE = {
     "Mard H16": (27, 18, 19),   "Mard H17": (240, 238, 239), "Mard H18": (252, 255, 248),
     "Mard H19": (242, 238, 229), "Mard H20": (150, 160, 159), "Mard H21": (248, 251, 230),
     "Mard H22": (202, 202, 218), "Mard H23": (155, 156, 148),
-    # --- M 系列 ---
     "Mard M1": (187, 198, 182), "Mard M2": (144, 153, 148), "Mard M3": (105, 126, 128),
     "Mard M4": (224, 212, 188), "Mard M5": (208, 203, 174), "Mard M6": (176, 170, 134),
     "Mard M7": (176, 167, 150), "Mard M8": (174, 128, 130), "Mard M9": (168, 135, 100),
@@ -113,7 +105,7 @@ MARD_PALETTE = {
     "Mard M13": (199, 146, 102), "Mard M14": (195, 116, 99), "Mard M15": (116, 125, 122),
 }
 
-# --- 2. 核心功能函数 ---
+# --- 2. 拼豆核心功能函数 ---
 
 def find_closest_color(pixel):
     """拼豆颜色匹配逻辑"""
@@ -134,12 +126,9 @@ def find_closest_color(pixel):
     return closest_name, closest_rgb
 
 def create_printable_sheet(grid_data, color_map, width, height):
-    """
-    生成拼豆图纸逻辑 (包含边缘坐标)
-    """
+    """生成拼豆图纸逻辑 (包含边缘坐标)"""
     cell_size = 30
     margin = 50
-    # 增加额外的顶部和左侧空间用于写坐标数字
     coord_offset_x = 30 
     coord_offset_y = 30
     
@@ -149,28 +138,23 @@ def create_printable_sheet(grid_data, color_map, width, height):
     sheet = Image.new("RGB", (img_width, img_height), "white")
     draw = ImageDraw.Draw(sheet)
     
-    # 实际网格的起点
     grid_start_x = margin + coord_offset_x
     grid_start_y = margin + coord_offset_y
 
-    # --- 绘制坐标数字 ---
-    # 1. 顶部 X 轴数字 (1, 2, 3...)
+    # 绘制坐标数字
     for x in range(width):
-        # 计算数字位置，居中显示
         text = str(x + 1)
-        # 简单估算居中：格子宽30，每个数字宽约6-8像素
         text_pos_x = grid_start_x + x * cell_size + (10 if len(text) == 1 else 5) 
         text_pos_y = margin 
         draw.text((text_pos_x, text_pos_y), text, fill="black")
 
-    # 2. 左侧 Y 轴数字 (1, 2, 3...)
     for y in range(height):
         text = str(y + 1)
         text_pos_x = margin
-        text_pos_y = grid_start_y + y * cell_size + 8 # 稍微垂直居中
+        text_pos_y = grid_start_y + y * cell_size + 8
         draw.text((text_pos_x, text_pos_y), text, fill="black")
 
-    # --- 绘制网格与色号 ---
+    # 绘制网格与色号
     for y, row in enumerate(grid_data):
         for x, cell in enumerate(row):
             top_left_x = grid_start_x + x * cell_size
@@ -187,69 +171,62 @@ def create_printable_sheet(grid_data, color_map, width, height):
             else:
                 draw.rectangle([top_left_x, top_left_y, bottom_right_x, bottom_right_y], fill="white", outline="lightgray")
 
-    # --- 绘制 10x10 粗线 ---
-    # 竖线
+    # 绘制粗线
     for i in range(0, width + 1, 10):
         line_x = grid_start_x + i * cell_size
         draw.line([(line_x, margin), (line_x, img_height - margin)], fill="black", width=2)
     
-    # 横线
     for i in range(0, height + 1, 10):
         line_y = grid_start_y + i * cell_size
         draw.line([(margin, line_y), (img_width - margin, line_y)], fill="black", width=2)
 
     return sheet
 
-# --- 3. 动漫风格化功能函数 (AnimeGANv2) ---
-@st.cache_resource
-def load_animegan_model(style):
-    """加载模型"""
-    if not HAS_TORCH:
-        return None, None
-    device = 'cpu'
-    try:
-        model = torch.hub.load("bryandlee/animegan2-pytorch:main", "generator", pretrained=style, verbose=False)
-        model.to(device).eval()
-        return model, device
-    except Exception as e:
-        st.error(f"模型加载失败: {e}")
-        return None, None
+# --- 3. 云端动漫风格化 (Hugging Face Free API) ---
+def generate_anime_style_hf(image_file, style_prompt, api_token):
+    """使用 Hugging Face 的免费 Inference API"""
+    if not HAS_HF:
+        st.error("⚠️ 未安装 huggingface_hub 库。")
+        return None
+    
+    # 实例化客户端
+    client = InferenceClient(token=api_token)
+    
+    # 定义模型：SDXL Base
+    model_id = "stabilityai/stable-diffusion-xl-base-1.0"
+    
+    # 构造增强提示词
+    full_prompt = f"{style_prompt}, high quality, detailed, keeping the original composition."
+    negative_prompt = "blurry, low quality, distortion, deformed, ugly, bad anatomy"
 
-def process_anime_image(img, model, device):
-    """运行图片转换（智能保持原比例）"""
-    w, h = img.size
-    short_edge = min(w, h)
-    target_short_edge = 512 
-    ratio = target_short_edge / short_edge
-    new_w = int(w * ratio)
-    new_h = int(h * ratio)
-    new_w = (new_w // 32) * 32
-    new_h = (new_h // 32) * 32
-    
-    img_resized = img.resize((new_w, new_h), Image.BILINEAR)
-    
-    transform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-    ])
-    
-    img_tensor = transform(img_resized).unsqueeze(0).to(device)
-    
-    with torch.no_grad():
-        out = model(img_tensor, False)
-        
-    out = (out * 0.5 + 0.5).clamp(0, 1).squeeze()
-    out_pil = transforms.ToPILImage()(out)
-    return out_pil
+    try:
+        # 将 PIL Image 转为 Bytes
+        img_byte_arr = io.BytesIO()
+        image_file.save(img_byte_arr, format=image_file.format)
+        img_bytes = img_byte_arr.getvalue()
+
+        # 调用 API (image_to_image)
+        result_image = client.image_to_image(
+            image=img_bytes,
+            prompt=full_prompt,
+            negative_prompt=negative_prompt,
+            model=model_id,
+            strength=0.75, # 风格化强度
+            guidance_scale=7.5
+        )
+        return result_image
+            
+    except Exception as e:
+        st.error(f"Hugging Face API 调用失败 (可能是排队人太多，请稍后再试): {e}")
+        return None
+
 
 # --- 主程序 ---
-st.set_page_config(page_title="创意图片工坊", layout="wide")
+st.set_page_config(page_title="创意图片工坊 Pro", layout="wide")
 
-# 侧边栏导航
 st.sidebar.title("🛠️ 功能导航")
-app_mode = st.sidebar.radio("选择功能:", ["🧩 拼豆图纸生成", "✨ 照片转动漫风格"])
+app_mode = st.sidebar.radio("选择功能:", ["🧩 拼豆图纸生成", "✨ AI 风格化 (免费版)"])
 
-# 状态管理：重置逻辑
 if 'last_uploaded_file' not in st.session_state:
     st.session_state.last_uploaded_file = None
 
@@ -257,7 +234,7 @@ if 'last_uploaded_file' not in st.session_state:
 # 功能模块 1: 拼豆图纸生成
 # ==========================================
 if app_mode == "🧩 拼豆图纸生成":
-    st.title("拼豆图纸生成器 (Mard色系)")
+    st.title("🧩 专业版拼豆图纸生成器 (Mard色系)")
     
     if 'pindou_grid' not in st.session_state:
         st.session_state.pindou_grid = None
@@ -343,7 +320,6 @@ if app_mode == "🧩 拼豆图纸生成":
                 st.session_state.pindou_grid = grid_data
                 st.session_state.pindou_dims = (target_width, target_height)
 
-        # 结果展示
         if st.session_state.pindou_grid is not None:
             st.markdown("---")
             st.subheader("🎨 步骤二：生成结果")
@@ -355,18 +331,13 @@ if app_mode == "🧩 拼豆图纸生成":
 
             with t1:
                 st.caption("👇 鼠标移动到格子上，会立即显示色号与RGB数值。")
-                
-                # --- 构建带坐标的 HTML 表格 ---
-                # 1. 第一行：X轴坐标
-                html_rows = "<tr><td class='coord-cell'></td>" # 左上角空白格
+                html_rows = "<tr><td class='coord-cell'></td>"
                 for x in range(t_w):
                     html_rows += f"<td class='coord-cell'>{x+1}</td>"
                 html_rows += "</tr>"
                 
-                # 2. 数据行：每行第一个格子是 Y轴坐标
                 for y, row in enumerate(grid_data):
                     html_rows += "<tr>"
-                    # 添加行号
                     html_rows += f"<td class='coord-cell'>{y+1}</td>"
                     
                     for cell in row:
@@ -387,24 +358,9 @@ if app_mode == "🧩 拼豆图纸生成":
                     body {{ background-color: #ffffff !important; margin: 0; padding: 20px; font-family: sans-serif; }}
                     .container {{ display: flex; justify-content: center; padding-top: 50px; padding-bottom: 50px; overflow-x: auto; }}
                     .pixel-grid {{ border-collapse: collapse; background-color: white; box-shadow: 0 0 10px rgba(0,0,0,0.1); }}
-                    
-                    /* 普通像素格 */
                     .pixel-cell {{ width: 20px; min-width: 20px; height: 20px; border: 1px solid #ddd; position: relative; }}
                     .pixel-cell.empty {{ background-color: #f8f8f8; border: 1px dashed #eee; }}
-                    
-                    /* 坐标格样式 */
-                    .coord-cell {{
-                        width: 20px; min-width: 20px; height: 20px;
-                        background-color: #f0f0f0;
-                        color: #666;
-                        font-size: 10px;
-                        text-align: center;
-                        vertical-align: middle;
-                        border: 1px solid #e0e0e0;
-                        font-weight: bold;
-                    }}
-
-                    /* 悬停效果 */
+                    .coord-cell {{ width: 20px; min-width: 20px; height: 20px; background-color: #f0f0f0; color: #666; font-size: 10px; text-align: center; vertical-align: middle; border: 1px solid #e0e0e0; font-weight: bold; }}
                     .pixel-cell:hover::after {{ content: attr(data-name); position: absolute; bottom: 110%; left: 50%; transform: translateX(-50%); background-color: #333; color: #fff; padding: 5px 10px; border-radius: 4px; font-size: 12px; white-space: nowrap; z-index: 999; pointer-events: none; }}
                     .pixel-cell:hover::before {{ content: ''; position: absolute; bottom: 90%; left: 50%; transform: translateX(-50%); border-width: 6px; border-style: solid; border-color: #333 transparent transparent transparent; z-index: 999; }}
                 </style>
@@ -419,52 +375,69 @@ if app_mode == "🧩 拼豆图纸生成":
                 st.image(printable_img, caption="纯净版网格图纸 (含坐标)", use_container_width=True)
                 buf = io.BytesIO()
                 printable_img.save(buf, format="JPEG", quality=100)
-                
-                # 动态命名
                 file_root = os.path.splitext(uploaded_file.name)[0]
                 download_name = f"{file_root}_pixel.jpg"
-                
                 st.download_button("📥 下载图纸 (JPG)", data=buf.getvalue(), file_name=download_name, mime="image/jpeg")
 
     else:
         st.info("👈 请先在左侧侧边栏上传一张图片")
 
 # ==========================================
-# 功能模块 2: 照片转动漫风格
+# 功能模块 2: AI 风格化 (Hugging Face Free)
 # ==========================================
-elif app_mode == "✨ 照片转动漫风格":
-    st.title("✨ AI 照片转动漫生成器")
+elif app_mode == "✨ AI 风格化 (免费版)":
+    st.title("✨ 高级 AI 风格化 (Hugging Face Free)")
     
-    if not HAS_TORCH:
-        st.error("⚠️ 未检测到 PyTorch 库。请在终端运行: pip install torch torchvision")
+    if not HAS_HF:
+        st.error("⚠️ 严重错误：未检测到 `huggingface_hub` 库。请检查 requirements.txt。")
         st.stop()
 
-    if 'anime_results' not in st.session_state:
-        st.session_state.anime_results = []
+    # --- API 密钥管理逻辑 (核心修改) ---
+    api_token = None
+    
+    # 1. 优先尝试从 Secrets 获取
+    if "HF_TOKEN" in st.secrets:
+        api_token = st.secrets["HF_TOKEN"]
+        st.sidebar.success("✅ 已从 Secrets 自动加载 Token")
+    else:
+        # 2. 如果没有，则显示手动输入框
+        st.sidebar.warning("⚠️ 未检测到 Secrets 配置，请手动输入")
+        api_token = st.sidebar.text_input("输入 Hugging Face Token (hf_...)", type="password", help="去 huggingface.co/settings/tokens 免费创建一个")
+    
+    if not api_token:
+        st.warning("👈 请先在侧边栏输入 Token。")
+        st.stop()
 
-    def clear_anime_results():
-        st.session_state.anime_results = []
+    if 'anime_results_hf' not in st.session_state:
+        st.session_state.anime_results_hf = None
 
-    st.sidebar.header("1. 上传照片")
+    def clear_hf_results():
+        st.session_state.anime_results_hf = None
+
+    st.sidebar.header("2. 上传照片")
     uploaded_anime_file = st.sidebar.file_uploader(
-        "上传人像或风景照片", 
+        "上传照片", 
         type=["jpg", "png", "jpeg", "webp"],
-        key="anime_uploader",
-        on_change=clear_anime_results
+        key="hf_uploader",
+        on_change=clear_hf_results
     )
     
-    st.sidebar.header("2. 风格说明")
-    st.sidebar.info("""
-    使用开源 AnimeGANv2 生成。
-    👉 **CelebA / Paprika**: 强烈推荐！线条硬朗、色彩鲜明。
-    👉 **FacePaint**: 风格偏柔和油画。
-    """)
+    # --- 风格定义 ---
+    STYLE_PROMPTS = {
+        "🇯🇵 Irasutoya (日式插画)": "flat illustration style of Irasutoya, cute, simple line art, charming, Japanese clip art standard style, no shading, solid colors",
+        "🏞️ 吉卜力 (Ghibli)": "Studio Ghibli anime still, hand drawn watercolor texture, rich colors, fresh greens and deep blues, soft natural lighting, nostalgic, comforting atmosphere, highly detailed background, hayao miyazaki style",
+        "🎀 Hello Kitty 画风": "Sanrio Hello Kitty animated style, cartoon, thick outlines, pastel colors, cute, kawaii, simple character design",
+        "🐑 手工黏土动画": "Aardman animation style claymation still, handmade plasticine texture, fingerprints visible, soft rounded shapes, warm retro lighting, stop motion feel, tactile",
+    }
+
+    st.sidebar.header("3. 选择风格")
+    selected_style_name = st.sidebar.selectbox("选择目标风格", list(STYLE_PROMPTS.keys()))
 
     if uploaded_anime_file:
         original_image = Image.open(uploaded_anime_file).convert("RGB")
         
         st.subheader("🖼️ 图片预览与裁剪")
-        enable_anime_crop = st.checkbox("✂️ 启用手动裁剪", value=False, key="anime_crop_check")
+        enable_anime_crop = st.checkbox("✂️ 启用手动裁剪", value=False, key="hf_crop_check")
         final_anime_input = original_image 
 
         if enable_anime_crop and HAS_CROPPER:
@@ -482,66 +455,43 @@ elif app_mode == "✨ 照片转动漫风格":
                 realtime_update=True, 
                 box_color='#8B1A1A', 
                 aspect_ratio=None, 
-                key="anime_cropper"
+                key="hf_cropper"
             )
             st.image(cropped_img, caption="裁剪预览", width=150)
             final_anime_input = cropped_img
         else:
             st.image(original_image, caption="完整原图预览", width=300)
 
-        generate_anime_btn = st.sidebar.button("🎨 开始魔法转换")
+        generate_btn = st.sidebar.button("🎨 开始云端生成 (免费)")
 
-        if generate_anime_btn:
+        if generate_btn:
             st.markdown("---")
-            st.subheader("🪄 生成结果 (原比例)")
+            st.subheader("🪄 生成结果")
             
-            styles = [
-                ("celeba_distill", "CelebA"),
-                ("paprika", "Paprika"),
-                ("face_paint_512_v2", "FacePaint V2"),
-                ("face_paint_512_v1", "FacePaint V1"),
-            ]
+            selected_prompt = STYLE_PROMPTS[selected_style_name]
             
-            results = []
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            
-            for i, (style_code, style_name) in enumerate(styles):
-                status_text.text(f"正在生成第 {i+1}/4 张变体: {style_name}...")
-                model, device = load_animegan_model(style_code)
-                if model:
-                    res_img = process_anime_image(final_anime_input, model, device)
-                    results.append((style_name, res_img))
-                    del model
-                    if HAS_TORCH and torch.cuda.is_available():
-                        torch.cuda.empty_cache()
-                progress_bar.progress((i + 1) / 4)
-            
-            status_text.text("✅ 生成完毕！")
-            time.sleep(0.5)
-            status_text.empty()
-            progress_bar.empty()
-            st.session_state.anime_results = results
+            with st.spinner(f"正在请求 Hugging Face 免费 GPU 生成... (如果人多可能需要排队几分钟)"):
+                # 调用 API
+                result_img = generate_anime_style_hf(final_anime_input, selected_prompt, api_token)
+                
+                if result_img:
+                    st.session_state.anime_results_hf = (selected_style_name, result_img)
+                    st.success("✨ 生成成功！")
 
-        if st.session_state.anime_results:
-            cols = st.columns(2) 
-            for idx, (name, img) in enumerate(st.session_state.anime_results):
-                with cols[idx % 2]:
-                    st.image(img, caption=name, use_container_width=True)
-                    buf = io.BytesIO()
-                    img.save(buf, format="JPEG", quality=95)
-                    
-                    # 动态命名
-                    file_root = os.path.splitext(uploaded_anime_file.name)[0]
-                    style_suffix = name.split(" ")[0].lower() # 提取风格名
-                    download_name = f"{file_root}_anime_{style_suffix}.jpg"
-                    
-                    st.download_button(
-                        label=f"📥 下载 {name}",
-                        data=buf.getvalue(),
-                        file_name=download_name,
-                        mime="image/jpeg",
-                        key=f"dl_btn_{idx}"
-                    )
+        # 展示结果
+        if st.session_state.anime_results_hf:
+            style_name, img_pil = st.session_state.anime_results_hf
+            st.image(img_pil, caption=f"生成风格：{style_name}", use_container_width=True)
+            
+            buf = io.BytesIO()
+            img_pil.save(buf, format="JPEG", quality=95)
+            
+            file_root = os.path.splitext(uploaded_anime_file.name)[0]
+            # 简单清理一下风格名中的emoji和空格，方便做文件名
+            safe_style_name = style_name.split(" ")[1] if " " in style_name else style_name
+            download_name = f"{file_root}_ai_{safe_style_name}.jpg"
+            
+            st.download_button("📥 下载高清大图", data=buf.getvalue(), file_name=download_name, mime="image/jpeg")
+
     else:
         st.info("👈 请先在左侧上传照片")

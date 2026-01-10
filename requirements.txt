@@ -3,6 +3,4 @@ pillow
 numpy
 rembg[cpu]
 streamlit-cropper
-watchdog
-torch
-torchvision
+huggingface_hub
