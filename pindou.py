@@ -2,6 +2,7 @@ import streamlit as st
 from PIL import Image, ImageDraw, ImageFont
 import io
 import time
+import os  # 用于文件名处理
 
 # --- 依赖库检测 ---
 try:
@@ -16,7 +17,6 @@ try:
 except ImportError:
     HAS_CROPPER = False
 
-# 检测 PyTorch (用于动漫风格化)
 try:
     import torch
     from torchvision import transforms
@@ -26,7 +26,6 @@ except ImportError:
 
 # --- 1. MARD 色卡数据 (拼豆功能用) ---
 MARD_PALETTE = {
-    # (为了节省篇幅，这里保留你之前完整的色卡数据，代码逻辑里已包含)
     # --- A 系列 ---
     "Mard A1": (250, 245, 205), "Mard A2": (252, 254, 214), "Mard A3": (255, 255, 146),
     "Mard A4": (247, 236, 92),  "Mard A5": (255, 228, 75),  "Mard A6": (253, 169, 81),
@@ -135,19 +134,47 @@ def find_closest_color(pixel):
     return closest_name, closest_rgb
 
 def create_printable_sheet(grid_data, color_map, width, height):
-    """生成拼豆图纸逻辑"""
+    """
+    生成拼豆图纸逻辑 (包含边缘坐标)
+    """
     cell_size = 30
     margin = 50
-    img_width = margin * 2 + width * cell_size 
-    img_height = margin * 2 + height * cell_size
+    # 增加额外的顶部和左侧空间用于写坐标数字
+    coord_offset_x = 30 
+    coord_offset_y = 30
+    
+    img_width = margin * 2 + width * cell_size + coord_offset_x
+    img_height = margin * 2 + height * cell_size + coord_offset_y
     
     sheet = Image.new("RGB", (img_width, img_height), "white")
     draw = ImageDraw.Draw(sheet)
     
+    # 实际网格的起点
+    grid_start_x = margin + coord_offset_x
+    grid_start_y = margin + coord_offset_y
+
+    # --- 绘制坐标数字 ---
+    # 1. 顶部 X 轴数字 (1, 2, 3...)
+    for x in range(width):
+        # 计算数字位置，居中显示
+        text = str(x + 1)
+        # 简单估算居中：格子宽30，每个数字宽约6-8像素
+        text_pos_x = grid_start_x + x * cell_size + (10 if len(text) == 1 else 5) 
+        text_pos_y = margin 
+        draw.text((text_pos_x, text_pos_y), text, fill="black")
+
+    # 2. 左侧 Y 轴数字 (1, 2, 3...)
+    for y in range(height):
+        text = str(y + 1)
+        text_pos_x = margin
+        text_pos_y = grid_start_y + y * cell_size + 8 # 稍微垂直居中
+        draw.text((text_pos_x, text_pos_y), text, fill="black")
+
+    # --- 绘制网格与色号 ---
     for y, row in enumerate(grid_data):
         for x, cell in enumerate(row):
-            top_left_x = margin + x * cell_size
-            top_left_y = margin + y * cell_size
+            top_left_x = grid_start_x + x * cell_size
+            top_left_y = grid_start_y + y * cell_size
             bottom_right_x = top_left_x + cell_size
             bottom_right_y = top_left_y + cell_size
             
@@ -160,30 +187,26 @@ def create_printable_sheet(grid_data, color_map, width, height):
             else:
                 draw.rectangle([top_left_x, top_left_y, bottom_right_x, bottom_right_y], fill="white", outline="lightgray")
 
+    # --- 绘制 10x10 粗线 ---
+    # 竖线
     for i in range(0, width + 1, 10):
-        line_x = margin + i * cell_size
-        draw.line([(line_x, margin), (line_x, margin + height * cell_size)], fill="black", width=2)
+        line_x = grid_start_x + i * cell_size
+        draw.line([(line_x, margin), (line_x, img_height - margin)], fill="black", width=2)
+    
+    # 横线
     for i in range(0, height + 1, 10):
-        line_y = margin + i * cell_size
-        draw.line([(margin, line_y), (margin + width * cell_size, line_y)], fill="black", width=2)
+        line_y = grid_start_y + i * cell_size
+        draw.line([(margin, line_y), (img_width - margin, line_y)], fill="black", width=2)
 
     return sheet
 
 # --- 3. 动漫风格化功能函数 (AnimeGANv2) ---
 @st.cache_resource
 def load_animegan_model(style):
-    """
-    加载 AnimeGANv2 模型。
-    style 选项: 'celeba_distill', 'face_paint_512_v1', 'face_paint_512_v2', 'paprika'
-    """
+    """加载模型"""
     if not HAS_TORCH:
-        return None
-    
-    # 使用 torch.hub 直接加载 github 上的模型，省去手动下载权重的麻烦
-    # device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    # Mac M1/M2 可以尝试 'mps'，但为了稳定性暂时使用 'cpu'，由于模型较小，CPU速度也很快
-    device = 'cpu' 
-    
+        return None, None
+    device = 'cpu'
     try:
         model = torch.hub.load("bryandlee/animegan2-pytorch:main", "generator", pretrained=style, verbose=False)
         model.to(device).eval()
@@ -193,20 +216,28 @@ def load_animegan_model(style):
         return None, None
 
 def process_anime_image(img, model, device):
-    """运行图片转换"""
-    # 预处理
+    """运行图片转换（智能保持原比例）"""
+    w, h = img.size
+    short_edge = min(w, h)
+    target_short_edge = 512 
+    ratio = target_short_edge / short_edge
+    new_w = int(w * ratio)
+    new_h = int(h * ratio)
+    new_w = (new_w // 32) * 32
+    new_h = (new_h // 32) * 32
+    
+    img_resized = img.resize((new_w, new_h), Image.BILINEAR)
+    
     transform = transforms.Compose([
-        transforms.Resize((512, 512)), # 统一调整大小，避免过大内存溢出
         transforms.ToTensor(),
         transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
     ])
     
-    img_tensor = transform(img).unsqueeze(0).to(device)
+    img_tensor = transform(img_resized).unsqueeze(0).to(device)
     
     with torch.no_grad():
         out = model(img_tensor, False)
         
-    # 后处理
     out = (out * 0.5 + 0.5).clamp(0, 1).squeeze()
     out_pil = transforms.ToPILImage()(out)
     return out_pil
@@ -228,7 +259,6 @@ if 'last_uploaded_file' not in st.session_state:
 if app_mode == "🧩 拼豆图纸生成":
     st.title("🧩 专业版拼豆图纸生成器 (Mard色系)")
     
-    # 初始化 Session State
     if 'pindou_grid' not in st.session_state:
         st.session_state.pindou_grid = None
         st.session_state.pindou_dims = (0, 0)
@@ -325,9 +355,20 @@ if app_mode == "🧩 拼豆图纸生成":
 
             with t1:
                 st.caption("👇 鼠标移动到格子上，会立即显示色号与RGB数值。")
-                html_rows = ""
-                for row in grid_data:
+                
+                # --- 构建带坐标的 HTML 表格 ---
+                # 1. 第一行：X轴坐标
+                html_rows = "<tr><td class='coord-cell'></td>" # 左上角空白格
+                for x in range(t_w):
+                    html_rows += f"<td class='coord-cell'>{x+1}</td>"
+                html_rows += "</tr>"
+                
+                # 2. 数据行：每行第一个格子是 Y轴坐标
+                for y, row in enumerate(grid_data):
                     html_rows += "<tr>"
+                    # 添加行号
+                    html_rows += f"<td class='coord-cell'>{y+1}</td>"
+                    
                     for cell in row:
                         if cell:
                             short_name = cell['name'].replace("Mard ", "")
@@ -346,8 +387,24 @@ if app_mode == "🧩 拼豆图纸生成":
                     body {{ background-color: #ffffff !important; margin: 0; padding: 20px; font-family: sans-serif; }}
                     .container {{ display: flex; justify-content: center; padding-top: 50px; padding-bottom: 50px; overflow-x: auto; }}
                     .pixel-grid {{ border-collapse: collapse; background-color: white; box-shadow: 0 0 10px rgba(0,0,0,0.1); }}
+                    
+                    /* 普通像素格 */
                     .pixel-cell {{ width: 20px; min-width: 20px; height: 20px; border: 1px solid #ddd; position: relative; }}
                     .pixel-cell.empty {{ background-color: #f8f8f8; border: 1px dashed #eee; }}
+                    
+                    /* 坐标格样式 */
+                    .coord-cell {{
+                        width: 20px; min-width: 20px; height: 20px;
+                        background-color: #f0f0f0;
+                        color: #666;
+                        font-size: 10px;
+                        text-align: center;
+                        vertical-align: middle;
+                        border: 1px solid #e0e0e0;
+                        font-weight: bold;
+                    }}
+
+                    /* 悬停效果 */
                     .pixel-cell:hover::after {{ content: attr(data-name); position: absolute; bottom: 110%; left: 50%; transform: translateX(-50%); background-color: #333; color: #fff; padding: 5px 10px; border-radius: 4px; font-size: 12px; white-space: nowrap; z-index: 999; pointer-events: none; }}
                     .pixel-cell:hover::before {{ content: ''; position: absolute; bottom: 90%; left: 50%; transform: translateX(-50%); border-width: 6px; border-style: solid; border-color: #333 transparent transparent transparent; z-index: 999; }}
                 </style>
@@ -359,10 +416,15 @@ if app_mode == "🧩 拼豆图纸生成":
 
             with t2:
                 printable_img = create_printable_sheet(grid_data, {}, t_w, t_h)
-                st.image(printable_img, caption="纯净版网格图纸", use_container_width=True)
+                st.image(printable_img, caption="纯净版网格图纸 (含坐标)", use_container_width=True)
                 buf = io.BytesIO()
                 printable_img.save(buf, format="JPEG", quality=100)
-                st.download_button("📥 下载图纸 (JPG)", data=buf.getvalue(), file_name="pattern_grid.jpg", mime="image/jpeg")
+                
+                # 动态命名
+                file_root = os.path.splitext(uploaded_file.name)[0]
+                download_name = f"{file_root}_pixel.jpg"
+                
+                st.download_button("📥 下载图纸 (JPG)", data=buf.getvalue(), file_name=download_name, mime="image/jpeg")
 
     else:
         st.info("👈 请先在左侧侧边栏上传一张图片")
@@ -393,76 +455,91 @@ elif app_mode == "✨ 照片转动漫风格":
     
     st.sidebar.header("2. 风格说明")
     st.sidebar.info("""
-    此功能使用 **AnimeGANv2** 模型。
-    一次生成 4 种变体：
-    1. **Paprika (今敏风)**: 色彩浓郁，适合风景
-    2. **CelebA (通用动漫)**: 适合人像，线条清晰
-    3. **FacePaint v1**: 油画质感
-    4. **FacePaint v2**: 细腻日漫风
+    使用开源 AnimeGANv2 生成。
+    👉 **CelebA / Paprika**: 强烈推荐！线条硬朗、色彩鲜明。
+    👉 **FacePaint**: 风格偏柔和油画。
     """)
 
-    generate_anime_btn = st.sidebar.button("🎨 开始魔法转换")
-
     if uploaded_anime_file:
-        image = Image.open(uploaded_anime_file).convert("RGB")
-        st.image(image, caption="原图", width=300)
+        original_image = Image.open(uploaded_anime_file).convert("RGB")
+        
+        st.subheader("🖼️ 图片预览与裁剪")
+        enable_anime_crop = st.checkbox("✂️ 启用手动裁剪", value=False, key="anime_crop_check")
+        final_anime_input = original_image 
+
+        if enable_anime_crop and HAS_CROPPER:
+            st.caption("请在下方红框内拖动选择区域：")
+            display_width = 800
+            if original_image.width < display_width:
+                aspect = original_image.height / original_image.width
+                new_height = int(display_width * aspect)
+                editing_image = original_image.resize((display_width, new_height), Image.BICUBIC)
+            else:
+                editing_image = original_image
+            
+            cropped_img = st_cropper(
+                editing_image, 
+                realtime_update=True, 
+                box_color='#8B1A1A', 
+                aspect_ratio=None, 
+                key="anime_cropper"
+            )
+            st.image(cropped_img, caption="裁剪预览", width=150)
+            final_anime_input = cropped_img
+        else:
+            st.image(original_image, caption="完整原图预览", width=300)
+
+        generate_anime_btn = st.sidebar.button("🎨 开始魔法转换")
 
         if generate_anime_btn:
             st.markdown("---")
-            st.subheader("🪄 生成结果")
+            st.subheader("🪄 生成结果 (原比例)")
             
-            # 定义要使用的4种模型风格 (Torch Hub 上的名称)
             styles = [
-                ("paprika", "Paprika (今敏风)"),
-                ("celeba_distill", "CelebA (通用动漫)"),
-                ("face_paint_512_v1", "FacePaint (油画感)"),
-                ("face_paint_512_v2", "FacePaint (日漫风)"),
+                ("celeba_distill", "CelebA"),
+                ("paprika", "Paprika"),
+                ("face_paint_512_v2", "FacePaint V2"),
+                ("face_paint_512_v1", "FacePaint V1"),
             ]
             
             results = []
-            
-            # 创建进度条
             progress_bar = st.progress(0)
             status_text = st.empty()
             
             for i, (style_code, style_name) in enumerate(styles):
                 status_text.text(f"正在生成第 {i+1}/4 张变体: {style_name}...")
-                
-                # 加载模型
                 model, device = load_animegan_model(style_code)
                 if model:
-                    # 推理
-                    res_img = process_anime_image(image, model, device)
+                    res_img = process_anime_image(final_anime_input, model, device)
                     results.append((style_name, res_img))
-                    
-                    # 释放显存/内存
                     del model
                     if HAS_TORCH and torch.cuda.is_available():
                         torch.cuda.empty_cache()
-                
                 progress_bar.progress((i + 1) / 4)
             
-            status_text.text("✅ 所有风格生成完毕！")
-            time.sleep(1)
+            status_text.text("✅ 生成完毕！")
+            time.sleep(0.5)
             status_text.empty()
             progress_bar.empty()
-            
             st.session_state.anime_results = results
 
-        # 展示结果
         if st.session_state.anime_results:
-            cols = st.columns(2) # 2列布局
+            cols = st.columns(2) 
             for idx, (name, img) in enumerate(st.session_state.anime_results):
                 with cols[idx % 2]:
                     st.image(img, caption=name, use_container_width=True)
-                    
-                    # 下载按钮
                     buf = io.BytesIO()
                     img.save(buf, format="JPEG", quality=95)
+                    
+                    # 动态命名
+                    file_root = os.path.splitext(uploaded_anime_file.name)[0]
+                    style_suffix = name.split(" ")[0].lower() # 提取风格名
+                    download_name = f"{file_root}_anime_{style_suffix}.jpg"
+                    
                     st.download_button(
                         label=f"📥 下载 {name}",
                         data=buf.getvalue(),
-                        file_name=f"anime_{idx+1}.jpg",
+                        file_name=download_name,
                         mime="image/jpeg",
                         key=f"dl_btn_{idx}"
                     )
