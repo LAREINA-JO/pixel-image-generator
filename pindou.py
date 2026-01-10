@@ -133,13 +133,16 @@ def find_closest_color(pixel):
 def create_printable_sheet(grid_data, color_map, width, height):
     # 配置
     cell_size = 30
-    margin = 50
+    margin = 60 # [修改] 增加边距以容纳行列号
     # 不再保留右侧图例区域
     img_width = margin * 2 + width * cell_size 
     img_height = margin * 2 + height * cell_size
     
     sheet = Image.new("RGB", (img_width, img_height), "white")
     draw = ImageDraw.Draw(sheet)
+    
+    # [修改] 为了绘制文字，需要加载字体，这里使用默认字体
+    # 如果想用更好看的字体，可以用 ImageFont.truetype("arial.ttf", 10)
     
     # 绘制网格
     for y, row in enumerate(grid_data):
@@ -165,13 +168,36 @@ def create_printable_sheet(grid_data, color_map, width, height):
             else:
                 draw.rectangle([top_left_x, top_left_y, bottom_right_x, bottom_right_y], fill="white", outline="lightgray")
 
-    # 绘制10x10粗线
+    # [修改] 绘制 10x10 粗线 和 边框线
     for i in range(0, width + 1, 10):
         line_x = margin + i * cell_size
         draw.line([(line_x, margin), (line_x, margin + height * cell_size)], fill="black", width=2)
     for i in range(0, height + 1, 10):
         line_y = margin + i * cell_size
         draw.line([(margin, line_y), (margin + width * cell_size, line_y)], fill="black", width=2)
+
+    # --- [新增] 绘制行列号 ---
+    # 1. 顶部列号 (X轴)
+    for x in range(width):
+        num_str = str(x + 1)
+        # 简单计算居中位置
+        text_w = len(num_str) * 6
+        x_pos = margin + x * cell_size + (cell_size - text_w) / 2
+        y_pos = margin - 15 # 显示在网格上方
+        
+        # 重点显示整10的数字，其他用灰色或者每5个显示一次？这里为了方便全部显示
+        fill_color = "black" if (x + 1) % 5 == 0 else "gray"
+        draw.text((x_pos + 3, y_pos), num_str, fill=fill_color)
+
+    # 2. 左侧行号 (Y轴)
+    for y in range(height):
+        num_str = str(y + 1)
+        text_w = len(num_str) * 6
+        x_pos = margin - text_w - 5 # 显示在网格左侧
+        y_pos = margin + y * cell_size + 8 # 垂直居中
+        
+        fill_color = "black" if (y + 1) % 5 == 0 else "gray"
+        draw.text((x_pos, y_pos), num_str, fill=fill_color)
 
     return sheet
 
@@ -287,9 +313,26 @@ if uploaded_file:
         with t1:
             st.caption("👇 鼠标移动到格子上，会立即显示色号与RGB数值。")
             
-            html_rows = ""
-            for row in grid_data:
+            # --- [修改] 构建 HTML 表格，加入行列号 ---
+            
+            # 1. 表头行 (X轴坐标)
+            html_rows = "<tr><th style='background:none; border:none;'></th>" # 左上角空白
+            for x in range(t_w):
+                # 每5个数字加粗，方便阅读
+                fw = "bold" if (x+1)%5==0 else "normal"
+                col_color = "#333" if (x+1)%5==0 else "#999"
+                html_rows += f"<th class='axis-x' style='color:{col_color}; font-weight:{fw}'>{x+1}</th>"
+            html_rows += "</tr>"
+
+            # 2. 数据行
+            for y, row in enumerate(grid_data):
                 html_rows += "<tr>"
+                
+                # 行首 (Y轴坐标)
+                fw = "bold" if (y+1)%5==0 else "normal"
+                col_color = "#333" if (y+1)%5==0 else "#999"
+                html_rows += f"<td class='axis-y' style='color:{col_color}; font-weight:{fw}'>{y+1}</td>"
+                
                 for cell in row:
                     if cell:
                         short_name = cell['name'].replace("Mard ", "")
@@ -320,16 +363,37 @@ if uploaded_file:
                     overflow-x: auto;
                 }}
                 .pixel-grid {{
-                    border-collapse: collapse;
+                    border-collapse: separate; /* 改为 separate 以避免边框冲突，或者保持 collapse */
+                    border-spacing: 0;
                     background-color: white;
-                    box-shadow: 0 0 10px rgba(0,0,0,0.1);
+                    /* box-shadow: 0 0 10px rgba(0,0,0,0.1); 去掉阴影让坐标更贴合 */
                 }}
+                
+                /* [新增] 坐标轴样式 */
+                .axis-x {{
+                    width: 20px;
+                    font-size: 10px;
+                    text-align: center;
+                    vertical-align: bottom;
+                    padding-bottom: 2px;
+                    border: none;
+                }}
+                .axis-y {{
+                    height: 20px;
+                    font-size: 10px;
+                    text-align: right;
+                    padding-right: 5px;
+                    border: none;
+                    white-space: nowrap;
+                }}
+
                 .pixel-cell {{
                     width: 20px;
                     min-width: 20px;
                     height: 20px;
                     border: 1px solid #ddd;
                     position: relative;
+                    box-sizing: border-box; /* 确保边框计算在内 */
                 }}
                 .pixel-cell.empty {{
                     background-color: #f8f8f8;
@@ -361,6 +425,11 @@ if uploaded_file:
                     border-color: #333 transparent transparent transparent;
                     z-index: 999;
                 }}
+                /* [新增] 鼠标悬停时高亮当前单元格边框 */
+                .pixel-cell:hover {{
+                    border: 2px solid #333;
+                    z-index: 10;
+                }}
             </style>
             </head>
             <body>
@@ -378,11 +447,11 @@ if uploaded_file:
 
         with t2:
             printable_img = create_printable_sheet(grid_data, color_usage, t_w, t_h)
-            st.image(printable_img, caption="纯净版网格图纸 (无图例)", use_container_width=True)
+            st.image(printable_img, caption="纯净版网格图纸 (带坐标尺)", use_container_width=True)
             
             buf = io.BytesIO()
             printable_img.save(buf, format="JPEG", quality=100)
-            st.download_button("📥 下载图纸 (JPG)", data=buf.getvalue(), file_name="pattern_grid.jpg", mime="image/jpeg")
+            st.download_button("📥 下载图纸 (JPG)", data=buf.getvalue(), file_name="pattern_grid_with_ruler.jpg", mime="image/jpeg")
 else:
     # 如果没有上传文件，这里也可以加个重置，确保干净
     if st.session_state.result_grid is not None:
