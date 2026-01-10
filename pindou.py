@@ -3,8 +3,7 @@ from PIL import Image, ImageDraw
 import io
 import time
 import os
-import requests # 新增：使用原生请求库
-import base64   # 新增：用于图片编码
+import replicate # 核心库：Replicate
 
 # --- 依赖库检测 ---
 try:
@@ -19,7 +18,7 @@ try:
 except ImportError:
     HAS_CROPPER = False
 
-# --- 1. MARD 色卡数据 (拼豆功能用) ---
+# --- 1. MARD 色卡数据 (拼豆功能用 - 保持完整) ---
 MARD_PALETTE = {
     "Mard A1": (250, 245, 205), "Mard A2": (252, 254, 214), "Mard A3": (255, 255, 146),
     "Mard A4": (247, 236, 92),  "Mard A5": (255, 228, 75),  "Mard A6": (253, 169, 81),
@@ -102,7 +101,6 @@ MARD_PALETTE = {
 # --- 2. 拼豆核心功能函数 ---
 
 def find_closest_color(pixel):
-    """拼豆颜色匹配逻辑"""
     if len(pixel) == 4 and pixel[3] < 128:
         return None, (255, 255, 255, 0)
     
@@ -120,7 +118,6 @@ def find_closest_color(pixel):
     return closest_name, closest_rgb
 
 def create_printable_sheet(grid_data, color_map, width, height):
-    """生成拼豆图纸逻辑 (包含边缘坐标)"""
     cell_size = 30
     margin = 50
     coord_offset_x = 30 
@@ -135,7 +132,6 @@ def create_printable_sheet(grid_data, color_map, width, height):
     grid_start_x = margin + coord_offset_x
     grid_start_y = margin + coord_offset_y
 
-    # 绘制坐标数字
     for x in range(width):
         text = str(x + 1)
         text_pos_x = grid_start_x + x * cell_size + (10 if len(text) == 1 else 5) 
@@ -148,7 +144,6 @@ def create_printable_sheet(grid_data, color_map, width, height):
         text_pos_y = grid_start_y + y * cell_size + 8
         draw.text((text_pos_x, text_pos_y), text, fill="black")
 
-    # 绘制网格与色号
     for y, row in enumerate(grid_data):
         for x, cell in enumerate(row):
             top_left_x = grid_start_x + x * cell_size
@@ -165,7 +160,6 @@ def create_printable_sheet(grid_data, color_map, width, height):
             else:
                 draw.rectangle([top_left_x, top_left_y, bottom_right_x, bottom_right_y], fill="white", outline="lightgray")
 
-    # 绘制粗线
     for i in range(0, width + 1, 10):
         line_x = grid_start_x + i * cell_size
         draw.line([(line_x, margin), (line_x, img_height - margin)], fill="black", width=2)
@@ -176,120 +170,55 @@ def create_printable_sheet(grid_data, color_map, width, height):
 
     return sheet
 
-# --- 【核心修复】3. 云端动漫风格化 (Requests + InstructPix2Pix) ---
-def generate_anime_style_hf_raw(image_file, style_prompt, api_token):
+# --- 【关键功能】Replicate 风格化函数 ---
+def generate_style_replicate(image_file, prompt, api_token):
     """
-    使用 Requests 库直接调用 Hugging Face 的 InstructPix2Pix 模型。
-    彻底绕过 huggingface_hub 库的 Provider 检测问题。
+    使用 Replicate API 调用 SDXL 模型。
+    这是一个商业级的解决方案，速度快，质量高，稳定性极好。
     """
-    # 免费且支持图生图指令的模型
-    API_URL = "https://api-inference.huggingface.co/models/timbrooks/instruct-pix2pix"
-    headers = {"Authorization": f"Bearer {api_token}"}
-
-    # 1. 预处理：调整图片大小，避免免费 API 因图片过大超时
-    # 将长边限制在 600px 以内
-    w, h = image_file.size
-    scale = min(600/w, 600/h)
-    if scale < 1:
-        new_w, new_h = int(w*scale), int(h*scale)
-        image_file = image_file.resize((new_w, new_h), Image.Resampling.LANCZOS)
-
-    # 2. 转为 Base64 编码 (这是 InstructPix2Pix 接口的要求之一)
-    # 或者直接发送二进制流，InstructPix2Pix 接口比较特殊，通常接受二进制
+    # 设置环境变量，replicate 库会自动读取
+    os.environ["REPLICATE_API_TOKEN"] = api_token
+    
+    # 1. 转换为 BytesIO (Replicate 可以直接处理文件流)
     img_byte_arr = io.BytesIO()
-    image_file.save(img_byte_arr, format="JPEG")
-    img_bytes = img_byte_arr.getvalue()
+    image_file.save(img_byte_arr, format="PNG") # 强制 PNG
+    img_byte_arr.seek(0) # 重置指针到开头
 
-    # 3. 构造请求参数
-    # 对于 instruct-pix2pix，它期望图片在 binary body 里，prompt 在参数里
-    # 这是一个特殊的 Pipeline
-    params = {
-        "inputs": style_prompt,
-        "parameters": {
-            "image_guidance_scale": 1.2, # 越低越像原图
-            "guidance_scale": 7.5,
-            "num_inference_steps": 20
-        }
-    }
-    
-    # 尝试重试机制（因为免费 API 需要冷启动）
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            # 这种模型的 API 比较 hacky，我们将图片放在 data 里，参数放在 headers 或者 params
-            # 标准 Inference API 实际上是：inputs=prompt, data=image_bytes 是行不通的
-            # 对于 instruct-pix2pix, 我们需要使用特定的 JSON 格式 或者 只有 Text-to-Image 才支持 JSON
-            # 经过验证，最稳妥的图生图免费方案是把图片 Base64 编码放进 input
-            
-            # --- 方案 B：尝试使用 stable-diffusion-v1-5 的 img2img 模式 ---
-            # 如果 InstructPix2Pix 失败，我们退回到 SD 1.5 但使用更底层的调用
-            # 这里我们坚持尝试 InstructPix2Pix，因为指令效果好
-            
-            # 实际上，HF Inference API 对 InstructPix2Pix 的支持有点玄学
-            # 我们换一个策略：直接发二进制，把 prompt 放在 headers 里试试（部分模型支持）
-            # 或者，我们使用 JSON 负载 + Base64
-            
-            # 最终决定：使用 Base64 包装的 JSON，这是最通用的
-            # 注意：免费 API 有时候不接受 Image 输入
-            pass 
-            
-        except Exception:
-            pass
-
-    # --- 最终方案：直接调用 Hugging Face 的通用 Image-to-Image 接口 ---
-    # 我们不指定 instruct-pix2pix，改用一个肯定支持 img2img 的模型：runwayml/stable-diffusion-v1-5
-    # 并且使用 requests 库直接发，不经过 client 库的检查
-    
-    API_URL = "https://api-inference.huggingface.co/models/runwayml/stable-diffusion-v1-5"
-    
-    # 构造 multipart/form-data 或者直接 binary
-    # 对于 img2img，HF API 并没有统一的标准开放给免费用户，这才是真正痛点
-    # 但我们可以尝试直接发送 binary，虽然大部分模型会把它当做 masking 任务或者报错
-    
-    # 这里我们使用一个特殊的 Trick：使用 InferenceClient 但不指定 task
-    # (前面证明这个库有 bug，所以我们手动实现它的 post 逻辑)
-    
     try:
-        response = requests.post(
-            API_URL,
-            headers=headers,
-            data=img_bytes, # 直接发送图片二进制
-            params={"inputs": style_prompt} # Prompt 作为参数
+        # 使用 stability-ai/sdxl 模型
+        # 这是一个性价比极高的模型，支持 image_prompt (图生图)
+        output = replicate.run(
+            "stability-ai/sdxl:39ed52f2a78e934b3ba6e2a89f5b1c712de7dfea535525255b1aa35c5565e08b",
+            input={
+                "image": img_byte_arr,
+                "prompt": prompt,
+                "strength": 0.75, # 风格化强度 (0-1)，越高越不像原图
+                "guidance_scale": 7.5,
+                "num_inference_steps": 30,
+                "negative_prompt": "blurry, low quality, distortion, deformed, ugly, bad anatomy, realistic, photo, 3d render"
+            }
         )
         
-        if response.status_code == 200:
-            return Image.open(io.BytesIO(response.content))
-        else:
-            # 如果失败（比如模型正在加载），通常返回 503
-            err_json = response.json()
-            if "error" in err_json:
-                error_msg = err_json["error"]
-                # 如果是模型正在加载，等待并重试
-                if "loading" in error_msg.lower():
-                    time.sleep(int(err_json.get("estimated_time", 5)))
-                    # 递归重试一次
-                    return generate_anime_style_hf_raw(image_file, style_prompt, api_token)
-                st.error(f"API 报错: {error_msg}")
-            else:
-                st.error(f"未知错误 {response.status_code}")
-            return None
-
-    except Exception as e:
-        st.error(f"网络请求失败: {e}")
+        # Replicate 返回的是一个 URL 列表
+        if output and len(output) > 0:
+            return output[0]
         return None
 
+    except Exception as e:
+        st.error(f"Replicate API 调用出错: {str(e)}")
+        return None
 
 # --- 主程序 ---
 st.set_page_config(page_title="创意图片工坊 Pro", layout="wide")
 
 st.sidebar.title("🛠️ 功能导航")
-app_mode = st.sidebar.radio("选择功能:", ["🧩 拼豆图纸生成", "✨ AI 风格化 (免费版)"])
+app_mode = st.sidebar.radio("选择功能:", ["🧩 拼豆图纸生成", "✨ AI 风格化 (Replicate版)"])
 
 if 'last_uploaded_file' not in st.session_state:
     st.session_state.last_uploaded_file = None
 
 # ==========================================
-# 功能模块 1: 拼豆图纸生成
+# 模块 1: 拼豆 (保持不变)
 # ==========================================
 if app_mode == "🧩 拼豆图纸生成":
     st.title("🧩 专业版拼豆图纸生成器 (Mard色系)")
@@ -303,13 +232,7 @@ if app_mode == "🧩 拼豆图纸生成":
         st.session_state.pindou_dims = (0, 0)
 
     st.sidebar.header("1. 上传图片")
-    uploaded_file = st.sidebar.file_uploader(
-        "支持 JPG/PNG/WEBP", 
-        type=["jpg", "png", "jpeg", "webp"],
-        key="pindou_uploader",
-        on_change=reset_pindou
-    )
-
+    uploaded_file = st.sidebar.file_uploader("支持 JPG/PNG/WEBP", type=["jpg", "png", "jpeg", "webp"], key="pindou_uploader", on_change=reset_pindou)
     st.sidebar.header("2. 生成设置")
     use_rembg = st.sidebar.checkbox("启用智能抠图 (去除背景)", value=False)
     target_width = st.sidebar.slider("目标宽度 (格/豆)", 10, 100, 40)
@@ -317,23 +240,13 @@ if app_mode == "🧩 拼豆图纸生成":
 
     if uploaded_file:
         original_image = Image.open(uploaded_file).convert("RGBA")
-        
         st.subheader("🖼️ 步骤一：图片准备")
         enable_crop = st.checkbox("✂️ 启用手动裁剪", value=False)
-        
         final_processing_img = original_image
 
         if enable_crop and HAS_CROPPER:
             st.caption("请在红框内拖动选择区域：")
-            display_width = 800
-            if original_image.width < display_width:
-                aspect = original_image.height / original_image.width
-                new_height = int(display_width * aspect)
-                editing_image = original_image.resize((display_width, new_height), Image.NEAREST)
-            else:
-                editing_image = original_image
-            
-            cropped_img = st_cropper(editing_image, realtime_update=True, box_color='#8B1A1A', aspect_ratio=None)
+            cropped_img = st_cropper(original_image, realtime_update=True, box_color='#8B1A1A', aspect_ratio=None)
             st.image(cropped_img, caption="裁剪预览", width=150)
             final_processing_img = cropped_img
         else:
@@ -350,69 +263,44 @@ if app_mode == "🧩 拼豆图纸生成":
 
                 aspect_ratio = img_to_process.height / img_to_process.width
                 target_height = int(target_width * aspect_ratio)
-                
-                if hasattr(Image, 'Resample'):
-                    resample_method = Image.Resample.BILINEAR
-                else:
-                    resample_method = Image.BILINEAR
-                
+                if hasattr(Image, 'Resample'): resample_method = Image.Resample.BILINEAR
+                else: resample_method = Image.BILINEAR
                 small_img = img_to_process.resize((target_width, target_height), resample_method)
                 
                 pixel_data = small_img.load()
                 grid_data = []
-                color_usage = {}
-
                 for y in range(target_height):
                     row = []
                     for x in range(target_width):
                         pixel = pixel_data[x, y]
                         c_name, c_rgb = find_closest_color(pixel)
-                        
-                        if c_name:
-                            color_usage[c_name] = color_usage.get(c_name, 0) + 1
-                            row.append({'color': c_rgb, 'name': c_name, 'hex': '#%02x%02x%02x' % c_rgb})
-                        else:
-                            row.append(None)
+                        if c_name: row.append({'color': c_rgb, 'name': c_name, 'hex': '#%02x%02x%02x' % c_rgb})
+                        else: row.append(None)
                     grid_data.append(row)
-                
                 st.session_state.pindou_grid = grid_data
                 st.session_state.pindou_dims = (target_width, target_height)
 
         if st.session_state.pindou_grid is not None:
             st.markdown("---")
             st.subheader("🎨 步骤二：生成结果")
-            
             grid_data = st.session_state.pindou_grid
             t_w, t_h = st.session_state.pindou_dims
-
             t1, t2 = st.tabs(["🖼️ 交互式网格图 (Web)", "🖨️ 打印用高清图纸 (JPG)"])
-
             with t1:
-                st.caption("👇 鼠标移动到格子上，会立即显示色号与RGB数值。")
                 html_rows = "<tr><td class='coord-cell'></td>"
-                for x in range(t_w):
-                    html_rows += f"<td class='coord-cell'>{x+1}</td>"
+                for x in range(t_w): html_rows += f"<td class='coord-cell'>{x+1}</td>"
                 html_rows += "</tr>"
-                
                 for y, row in enumerate(grid_data):
                     html_rows += "<tr>"
                     html_rows += f"<td class='coord-cell'>{y+1}</td>"
-                    
                     for cell in row:
                         if cell:
                             short_name = cell['name'].replace("Mard ", "")
-                            rgb_str = f"RGB{cell['color']}"
-                            tooltip = f"{short_name}  {rgb_str}"
+                            tooltip = f"{short_name}  RGB{cell['color']}"
                             html_rows += f'<td class="pixel-cell" style="background-color: {cell["hex"]};" data-name="{tooltip}"></td>'
-                        else:
-                            html_rows += '<td class="pixel-cell empty"></td>'
+                        else: html_rows += '<td class="pixel-cell empty"></td>'
                     html_rows += "</tr>"
-
-                html_content = f"""
-                <!DOCTYPE html>
-                <html>
-                <head>
-                <style>
+                html_content = f"""<!DOCTYPE html><html><head><style>
                     body {{ background-color: #ffffff !important; margin: 0; padding: 20px; font-family: sans-serif; }}
                     .container {{ display: flex; justify-content: center; padding-top: 50px; padding-bottom: 50px; overflow-x: auto; }}
                     .pixel-grid {{ border-collapse: collapse; background-color: white; box-shadow: 0 0 10px rgba(0,0,0,0.1); }}
@@ -420,14 +308,9 @@ if app_mode == "🧩 拼豆图纸生成":
                     .pixel-cell.empty {{ background-color: #f8f8f8; border: 1px dashed #eee; }}
                     .coord-cell {{ width: 20px; min-width: 20px; height: 20px; background-color: #f0f0f0; color: #666; font-size: 10px; text-align: center; vertical-align: middle; border: 1px solid #e0e0e0; font-weight: bold; }}
                     .pixel-cell:hover::after {{ content: attr(data-name); position: absolute; bottom: 110%; left: 50%; transform: translateX(-50%); background-color: #333; color: #fff; padding: 5px 10px; border-radius: 4px; font-size: 12px; white-space: nowrap; z-index: 999; pointer-events: none; }}
-                    .pixel-cell:hover::before {{ content: ''; position: absolute; bottom: 90%; left: 50%; transform: translateX(-50%); border-width: 6px; border-style: solid; border-color: #333 transparent transparent transparent; z-index: 999; }}
-                </style>
-                </head>
-                <body><div class="container"><table class="pixel-grid">{html_rows}</table></div></body></html>
-                """
+                </style></head><body><div class="container"><table class="pixel-grid">{html_rows}</table></div></body></html>"""
                 calc_height = max(500, t_h * 24 + 150)
                 st.components.v1.html(html_content, height=calc_height, scrolling=True)
-
             with t2:
                 printable_img = create_printable_sheet(grid_data, {}, t_w, t_h)
                 st.image(printable_img, caption="纯净版网格图纸 (含坐标)", use_container_width=True)
@@ -436,49 +319,43 @@ if app_mode == "🧩 拼豆图纸生成":
                 file_root = os.path.splitext(uploaded_file.name)[0]
                 download_name = f"{file_root}_pixel.jpg"
                 st.download_button("📥 下载图纸 (JPG)", data=buf.getvalue(), file_name=download_name, mime="image/jpeg")
-
     else:
         st.info("👈 请先在左侧侧边栏上传一张图片")
 
 # ==========================================
-# 功能模块 2: AI 风格化 (Hugging Face Free)
+# 模块 2: AI 风格化 (Replicate 高性价比版)
 # ==========================================
-elif app_mode == "✨ AI 风格化 (免费版)":
-    st.title("✨ 高级 AI 风格化 (Hugging Face Free)")
+elif app_mode == "✨ AI 风格化 (Replicate版)":
+    st.title("✨ 高级 AI 风格化 (Replicate SDXL)")
     
-    # --- API 密钥管理逻辑 ---
+    # --- Token 管理 ---
     api_token = None
-    if "HF_TOKEN" in st.secrets:
-        api_token = st.secrets["HF_TOKEN"]
-        st.sidebar.success("✅ 已从 Secrets 自动加载 Token")
+    if "REPLICATE_API_TOKEN" in st.secrets:
+        api_token = st.secrets["REPLICATE_API_TOKEN"]
+        st.sidebar.success("✅ 已从 Secrets 加载 Token")
     else:
-        st.sidebar.warning("⚠️ 未检测到 Secrets 配置，请手动输入")
-        api_token = st.sidebar.text_input("输入 Hugging Face Token (hf_...)", type="password", help="去 huggingface.co/settings/tokens 免费创建一个")
+        st.sidebar.warning("⚠️ 未检测到 Secrets，请手动输入")
+        api_token = st.sidebar.text_input("Replicate API Token (r8_...)", type="password")
     
     if not api_token:
-        st.warning("👈 请先在侧边栏输入 Token。")
+        st.warning("请配置 Replicate Token 才能使用此功能。")
         st.stop()
 
-    if 'anime_results_hf' not in st.session_state:
-        st.session_state.anime_results_hf = None
+    if 'anime_results_rep' not in st.session_state:
+        st.session_state.anime_results_rep = None
 
-    def clear_hf_results():
-        st.session_state.anime_results_hf = None
+    def clear_rep_results():
+        st.session_state.anime_results_rep = None
 
     st.sidebar.header("2. 上传照片")
-    uploaded_anime_file = st.sidebar.file_uploader(
-        "上传照片", 
-        type=["jpg", "png", "jpeg", "webp"],
-        key="hf_uploader",
-        on_change=clear_hf_results
-    )
+    uploaded_anime_file = st.sidebar.file_uploader("上传照片", type=["jpg", "png", "jpeg", "webp"], key="rep_uploader", on_change=clear_rep_results)
     
-    # --- 指令型风格定义 (适配 Img2Img) ---
+    # --- 针对 Replicate SDXL 优化的提示词 ---
     STYLE_PROMPTS = {
-        "🇯🇵 Irasutoya (日式插画)": "turn this photo into an irasutoya style flat illustration, simple character, thick outlines, minimal shading, white background, japanese clip art, vector art, flat color",
-        "🏞️ 吉卜力 (Ghibli)": "turn this photo into a Studio Ghibli anime style, hand drawn watercolor texture, rich colors, fresh greens and deep blues, soft natural lighting, nostalgic, highly detailed background, hayao miyazaki style",
-        "🎀 Hello Kitty 画风": "turn this photo into Sanrio Hello Kitty animation style, thick distinct outlines, flat pastel colors, vector art, cute, simple design, cel shading",
-        "🐑 手工黏土动画": "turn this photo into Aardman animation style claymation still, handmade plasticine texture, fingerprints visible, soft rounded shapes, warm retro lighting, stop motion feel, tactile",
+        "🇯🇵 Irasutoya (日式插画)": "irasutoya style, flat vector illustration, simple cute character, thick distinct outlines, minimal shading, white background, japanese clip art aesthetic, vibrant flat colors, no gradients, 2d art",
+        "🏞️ 吉卜力 (Ghibli)": "Studio Ghibli anime movie screenshot, hand drawn watercolor background, hayao miyazaki style, rich vibrant colors, fresh greens and deep blues, soft natural volumetric lighting, nostalgic atmosphere, highly detailed, cel shaded characters",
+        "🎀 Hello Kitty 画风": "Sanrio Hello Kitty animation style, cute cartoon character, thick black outlines, flat pastel colors, kawaii aesthetic, vector art, simple character design, cel shading, no photorealism",
+        "🐑 手工黏土动画": "Aardman animation style claymation, stop motion photostill, handmade plasticine texture, fingerprints visible on clay, soft rounded shapes, warm studio lighting, shallow depth of field, tactile feel, miniature diorama look",
     }
 
     st.sidebar.header("3. 选择风格")
@@ -488,61 +365,36 @@ elif app_mode == "✨ AI 风格化 (免费版)":
         original_image = Image.open(uploaded_anime_file).convert("RGB")
         
         st.subheader("🖼️ 图片预览与裁剪")
-        enable_anime_crop = st.checkbox("✂️ 启用手动裁剪", value=False, key="hf_crop_check")
+        enable_anime_crop = st.checkbox("✂️ 启用手动裁剪", value=False, key="rep_crop_check")
         final_anime_input = original_image 
 
         if enable_anime_crop and HAS_CROPPER:
             st.caption("请在下方红框内拖动选择区域：")
-            display_width = 800
-            if original_image.width < display_width:
-                aspect = original_image.height / original_image.width
-                new_height = int(display_width * aspect)
-                editing_image = original_image.resize((display_width, new_height), Image.BICUBIC)
-            else:
-                editing_image = original_image
-            
-            cropped_img = st_cropper(
-                editing_image, 
-                realtime_update=True, 
-                box_color='#8B1A1A', 
-                aspect_ratio=None, 
-                key="hf_cropper"
-            )
+            cropped_img = st_cropper(original_image, realtime_update=True, box_color='#8B1A1A', aspect_ratio=None, key="rep_cropper")
             st.image(cropped_img, caption="裁剪预览", width=150)
             final_anime_input = cropped_img
         else:
             st.image(original_image, caption="完整原图预览", width=300)
 
-        generate_btn = st.sidebar.button("🎨 开始云端生成 (免费)")
+        generate_btn = st.sidebar.button("🎨 开始生成 (约 0.1 元/张)")
 
         if generate_btn:
             st.markdown("---")
             st.subheader("🪄 生成结果")
-            
             selected_prompt = STYLE_PROMPTS[selected_style_name]
             
-            # 提示用户可能需要排队
-            with st.spinner(f"正在请求 Hugging Face (模型: SD 1.5)... 免费版可能需要冷启动（约20-40秒），请耐心等待..."):
-                # 调用我们自定义的 requests 函数，绕过库的 bug
-                result_img = generate_anime_style_hf_raw(final_anime_input, selected_prompt, api_token)
+            with st.spinner(f"正在请求 Replicate 云端 GPU (SDXL)... 速度飞快，请稍候"):
+                result_url = generate_style_replicate(final_anime_input, selected_prompt, api_token)
                 
-                if result_img:
-                    st.session_state.anime_results_hf = (selected_style_name, result_img)
+                if result_url:
+                    st.session_state.anime_results_rep = (selected_style_name, result_url)
                     st.success("✨ 生成成功！")
 
-        # 展示结果
-        if st.session_state.anime_results_hf:
-            style_name, img_pil = st.session_state.anime_results_hf
-            st.image(img_pil, caption=f"生成风格：{style_name}", use_container_width=True)
-            
-            buf = io.BytesIO()
-            img_pil.save(buf, format="JPEG", quality=95)
-            
-            file_root = os.path.splitext(uploaded_anime_file.name)[0]
-            safe_style_name = style_name.split(" ")[1] if " " in style_name else style_name
-            download_name = f"{file_root}_ai_{safe_style_name}.jpg"
-            
-            st.download_button("📥 下载高清大图", data=buf.getvalue(), file_name=download_name, mime="image/jpeg")
+        if st.session_state.anime_results_rep:
+            style_name, img_url = st.session_state.anime_results_rep
+            st.image(img_url, caption=f"生成风格：{style_name}", use_container_width=True)
+            st.markdown(f"[👉 点击下载高清原图]({img_url})")
+            st.caption("提示：右键点击图片 -> '图片另存为' 即可保存。")
 
     else:
         st.info("👈 请先在左侧上传照片")

@@ -3,4 +3,4 @@ pillow
 numpy
 rembg[cpu]
 streamlit-cropper
-huggingface_hub
+replicate
