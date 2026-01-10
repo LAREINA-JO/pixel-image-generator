@@ -5,3 +5,4 @@ rembg[cpu]
 streamlit-cropper
 watchdog
 torch
+torchvision
