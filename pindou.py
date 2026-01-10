@@ -143,6 +143,7 @@ def create_printable_sheet(grid_data, color_map, width, height):
     grid_start_x = margin + coord_offset_x
     grid_start_y = margin + coord_offset_y
 
+    # 绘制坐标数字
     for x in range(width):
         text = str(x + 1)
         text_pos_x = grid_start_x + x * cell_size + (10 if len(text) == 1 else 5) 
@@ -155,6 +156,7 @@ def create_printable_sheet(grid_data, color_map, width, height):
         text_pos_y = grid_start_y + y * cell_size + 8
         draw.text((text_pos_x, text_pos_y), text, fill="black")
 
+    # 绘制网格与色号
     for y, row in enumerate(grid_data):
         for x, cell in enumerate(row):
             top_left_x = grid_start_x + x * cell_size
@@ -171,6 +173,7 @@ def create_printable_sheet(grid_data, color_map, width, height):
             else:
                 draw.rectangle([top_left_x, top_left_y, bottom_right_x, bottom_right_y], fill="white", outline="lightgray")
 
+    # 绘制粗线
     for i in range(0, width + 1, 10):
         line_x = grid_start_x + i * cell_size
         draw.line([(line_x, margin), (line_x, img_height - margin)], fill="black", width=2)
@@ -184,9 +187,10 @@ def create_printable_sheet(grid_data, color_map, width, height):
 # --- 【核心修复】3. 云端动漫风格化 (Hugging Face Free API) ---
 def generate_anime_style_hf(image_file, style_prompt, api_token):
     """
-    使用 Hugging Face 的免费 API。
-    修复点1：强制使用临时文件上传，解决 unknown file extension
-    修复点2：更换模型为 stable-diffusion-v1-5，解决 task not supported
+    使用 Hugging Face 的免费 Inference API。
+    修复点：
+    1. 强制使用临时文件上传，解决 unknown file extension
+    2. 更换模型为 stable-diffusion-v1-5，解决 task 'image-to-image' not supported
     """
     if not HAS_HF:
         st.error("⚠️ 未安装 huggingface_hub 库。")
@@ -194,7 +198,7 @@ def generate_anime_style_hf(image_file, style_prompt, api_token):
     
     client = InferenceClient(token=api_token)
     
-    # 【更换模型】SD v1.5 是最稳定的免费图生图模型
+    # 【更换模型】使用经典的 SD v1.5，它对免费的 image-to-image 支持最好
     model_id = "runwayml/stable-diffusion-v1-5"
     
     # 构造增强提示词
@@ -202,7 +206,7 @@ def generate_anime_style_hf(image_file, style_prompt, api_token):
     negative_prompt = "blurry, low quality, distortion, deformed, ugly, bad anatomy, photo, realistic"
 
     # 【关键修复】创建临时文件，强制后缀名为 .png
-    # 这样 Hugging Face 就知道它是一张图片了
+    # 这样 Hugging Face 就知道它是一张图片了，解决了 extension 报错
     with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as temp_file:
         image_file.save(temp_file.name, format="PNG")
         temp_file_path = temp_file.name
@@ -221,6 +225,7 @@ def generate_anime_style_hf(image_file, style_prompt, api_token):
         return result_image
             
     except Exception as e:
+        # 捕捉具体错误
         st.error(f"Hugging Face API 调用失败: {e}")
         return None
     finally:
@@ -427,12 +432,12 @@ elif app_mode == "✨ AI 风格化 (免费版)":
         on_change=clear_hf_results
     )
     
-    # --- 风格定义 (优化提示词) ---
+    # --- 优化后的卡通风格提示词 (针对 SD 1.5 微调) ---
     STYLE_PROMPTS = {
-        "🇯🇵 Irasutoya (日式插画)": "irasutoya style, flat illustration, simple character, thick outlines, minimal shading, white background, japanese clip art, vector art, flat color",
+        "🇯🇵 Irasutoya (日式插画)": "irasutoya style, flat illustration, simple character, thick outlines, minimal shading, white background, japanese clip art, vector art, flat color, 2D",
         "🏞️ 吉卜力 (Ghibli)": "Studio Ghibli anime style, hand drawn watercolor texture, rich colors, fresh greens and deep blues, soft natural lighting, nostalgic, highly detailed background, hayao miyazaki style",
         "🎀 Hello Kitty 画风": "Sanrio style, Hello Kitty animation style, thick distinct outlines, flat pastel colors, vector art, cute, simple design, cel shading",
-        "🐑 手工黏土动画": "Aardman animation style claymation still, handmade plasticine texture, fingerprints visible, soft rounded shapes, warm retro lighting, stop motion feel, tactile",
+        "🐑 手工黏土动画": "Aardman animation style claymation still, handmade plasticine texture, fingerprints visible, soft rounded shapes, warm retro lighting, stop motion feel, tactile, depth of field",
     }
 
     st.sidebar.header("3. 选择风格")
@@ -443,6 +448,7 @@ elif app_mode == "✨ AI 风格化 (免费版)":
         
         st.subheader("🖼️ 图片预览与裁剪")
         enable_anime_crop = st.checkbox("✂️ 启用手动裁剪", value=False, key="hf_crop_check")
+        
         final_anime_input = original_image 
 
         if enable_anime_crop and HAS_CROPPER:
@@ -492,6 +498,7 @@ elif app_mode == "✨ AI 风格化 (免费版)":
             img_pil.save(buf, format="JPEG", quality=95)
             
             file_root = os.path.splitext(uploaded_anime_file.name)[0]
+            # 简单清理一下风格名中的emoji和空格，方便做文件名
             safe_style_name = style_name.split(" ")[1] if " " in style_name else style_name
             download_name = f"{file_root}_ai_{safe_style_name}.jpg"
             
