@@ -3,7 +3,7 @@ from PIL import Image, ImageDraw
 import io
 import time
 import os
-import requests # 新增：用于下载 Replicate 返回的图片
+import requests # 用于下载 Replicate 返回的图片
 import replicate
 
 # --- 依赖库检测 ---
@@ -19,7 +19,7 @@ try:
 except ImportError:
     HAS_CROPPER = False
 
-# --- 1. MARD 色卡数据 (拼豆功能用) ---
+# --- 1. MARD 色卡数据 (拼豆功能用 - 保持不变) ---
 MARD_PALETTE = {
     "Mard A1": (250, 245, 205), "Mard A2": (252, 254, 214), "Mard A3": (255, 255, 146),
     "Mard A4": (247, 236, 92),  "Mard A5": (255, 228, 75),  "Mard A6": (253, 169, 81),
@@ -171,30 +171,31 @@ def create_printable_sheet(grid_data, color_map, width, height):
 
     return sheet
 
-# --- 【关键功能】Replicate 风格化函数 ---
+# --- 【关键修改】Replicate 风格化函数 (参数优化版) ---
 def generate_style_replicate(image_file, prompt, api_token):
     """
     使用 Replicate API 调用 SDXL 模型。
+    关键调整：降低 strength，增加 guidance_scale，强化负面提示词。
     """
     os.environ["REPLICATE_API_TOKEN"] = api_token
     
-    # 1. 转换为 BytesIO (Replicate 可以直接处理文件流)
     img_byte_arr = io.BytesIO()
-    image_file.save(img_byte_arr, format="PNG") # 强制 PNG
-    img_byte_arr.seek(0) # 重置指针到开头
+    image_file.save(img_byte_arr, format="PNG")
+    img_byte_arr.seek(0)
 
     try:
-        # 使用 stability-ai/sdxl 模型
-        # Replicate 返回的是一个 URL 列表
         output = replicate.run(
             "stability-ai/sdxl:39ed52f2a78e934b3ba6e2a89f5b1c712de7dfea535525255b1aa35c5565e08b",
             input={
                 "image": img_byte_arr,
                 "prompt": prompt,
-                "strength": 0.75, # 风格化强度 (0-1)
-                "guidance_scale": 7.5,
+                # 【核心修改】Strength 降到 0.55，确保像原图
+                "strength": 0.55, 
+                # 【核心修改】Guidance 提到 8.5，确保听从“卡通化”的指令
+                "guidance_scale": 8.5,
                 "num_inference_steps": 30,
-                "negative_prompt": "blurry, low quality, distortion, deformed, ugly, bad anatomy, realistic, photo, 3d render"
+                # 【核心修改】极强的负面提示词，禁止写实感
+                "negative_prompt": "photorealistic, realistic, 3d render, shading, gradients, shadows, depth of field, blurry, low quality, ugly, deformed"
             }
         )
         
@@ -348,12 +349,13 @@ elif app_mode == "✨ AI 风格化 (Replicate版)":
     st.sidebar.header("2. 上传照片")
     uploaded_anime_file = st.sidebar.file_uploader("上传照片", type=["jpg", "png", "jpeg", "webp"], key="rep_uploader", on_change=clear_rep_results)
     
-    # --- 针对 Replicate SDXL 优化的提示词 ---
+    # --- 【关键修改】针对“像本人+极度卡痛”优化的提示词 ---
+    # 核心逻辑：强调 2D、平面、描边，禁止光影和立体感
     STYLE_PROMPTS = {
-        "🇯🇵 Irasutoya (日式插画)": "irasutoya style, flat vector illustration, simple cute character, thick distinct outlines, minimal shading, white background, japanese clip art aesthetic, vibrant flat colors, no gradients, 2d art",
-        "🏞️ 吉卜力 (Ghibli)": "Studio Ghibli anime movie screenshot, hand drawn watercolor background, hayao miyazaki style, rich vibrant colors, fresh greens and deep blues, soft natural volumetric lighting, nostalgic atmosphere, highly detailed, cel shaded characters",
-        "🎀 Hello Kitty 画风": "Sanrio Hello Kitty animation style, cute cartoon character, thick black outlines, flat pastel colors, kawaii aesthetic, vector art, simple character design, cel shading, no photorealism",
-        "🐑 手工黏土动画": "Aardman animation style claymation, stop motion photostill, handmade plasticine texture, fingerprints visible on clay, soft rounded shapes, warm studio lighting, shallow depth of field, tactile feel, miniature diorama look",
+        "🇯🇵 Irasutoya (日式插画)": "flat 2d vector illustration style, irasutoya aesthetic, thick distinct black outlines, simple shapes, flat colors, no shading, no gradients, solid white background, cartoon, clip art, simple character design",
+        "🏞️ 吉卜力 (Ghibli)": "hand drawn 2d cel animation still, Studio Ghibli anime style, flat colors, traditional animation texture, painted background, hayao miyazaki, cartoon, no 3d, no photorealism",
+        "🎀 Hello Kitty 画风": "Sanrio cartoon style, flat 2d animation, thick bold outlines, simple flat pastel colors, cute character design, vector art, cel shading, kawaii, no realism",
+        "🐑 手工黏土动画": "stop motion clay animation still, handmade plasticine character, Aardman style, visible fingerprints, simple shapes, tactile texture, miniature set, cartoon, no photorealism",
     }
 
     st.sidebar.header("3. 选择风格")
@@ -381,7 +383,7 @@ elif app_mode == "✨ AI 风格化 (Replicate版)":
             st.subheader("🪄 生成结果")
             selected_prompt = STYLE_PROMPTS[selected_style_name]
             
-            with st.spinner(f"正在请求 Replicate 云端 GPU (SDXL)... 速度飞快，请稍候"):
+            with st.spinner(f"正在请求 Replicate 云端 GPU (SDXL)... (相似度参数已调至 0.55)"):
                 result_url = generate_style_replicate(final_anime_input, selected_prompt, api_token)
                 
                 if result_url:
@@ -391,31 +393,26 @@ elif app_mode == "✨ AI 风格化 (Replicate版)":
         if st.session_state.anime_results_rep:
             style_name, img_url = st.session_state.anime_results_rep
             
-            # 【核心修复点】下载 URL 对应的图片数据再显示
-            # 这样避免 Streamlit 直接解析复杂 URL 对象导致的 AttributeError
             try:
-                # 尝试下载图片
-                resp = requests.get(img_url, timeout=10)
+                # 下载图片数据
+                resp = requests.get(img_url, timeout=15)
                 if resp.status_code == 200:
                     image_bytes = io.BytesIO(resp.content)
                     image_pil = Image.open(image_bytes)
                     
                     st.image(image_pil, caption=f"生成风格：{style_name}", use_container_width=True)
                     
-                    # 下载按钮也使用这些 bytes
                     file_root = os.path.splitext(uploaded_anime_file.name)[0]
-                    # 安全的文件名
                     safe_style = style_name.split(" ")[1] if " " in style_name else "style"
                     download_name = f"{file_root}_ai_{safe_style}.jpg"
                     
-                    st.download_button("📥 下载高清大图", data=image_bytes, file_name=download_name, mime="image/jpeg")
+                    st.download_button("📥 下载高清大图", data=image_bytes.getvalue(), file_name=download_name, mime="image/jpeg")
                 else:
-                    st.error(f"无法下载生成的图片，服务器返回状态码: {resp.status_code}")
-                    # 备用方案：显示链接让用户自己点
-                    st.markdown(f"[👉 点击这里直接打开图片]({img_url})")
+                    st.error(f"图片下载失败 (状态码: {resp.status_code})，请点击下方链接查看。")
+                    st.markdown(f"[👉 点击直接查看图片]({img_url})")
             except Exception as e:
-                st.error(f"显示图片时出错: {e}")
-                st.markdown(f"[👉 点击这里直接打开图片]({img_url})")
+                st.error(f"图片处理出错: {e}")
+                st.markdown(f"[👉 点击直接查看图片]({img_url})")
 
     else:
         st.info("👈 请先在左侧上传照片")
