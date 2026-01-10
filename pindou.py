@@ -189,13 +189,19 @@ def generate_style_replicate(image_file, prompt, api_token):
             input={
                 "image": img_byte_arr,
                 "prompt": prompt,
-                # 【核心修改】Strength 降到 0.55，确保像原图
+                # 【核心修改 1】Strength (重绘幅度): 范围 0-1。
+                # 设置为 0.55，表示让模型基于原图结构修改约 55%，保留 45% 的原貌。
+                # 如果觉得还不够像，尝试调低到 0.45-0.5；如果觉得风格不够，调高到 0.6-0.65。
                 "strength": 0.55, 
-                # 【核心修改】Guidance 提到 8.5，确保听从“卡通化”的指令
+
+                # 【核心修改 2】Guidance Scale (提示词相关性):
+                # 调高到 8.5 (默认通常是 7.5)，强制模型更听从我们强调的“扁平卡通”指令。
                 "guidance_scale": 8.5,
                 "num_inference_steps": 30,
-                # 【核心修改】极强的负面提示词，禁止写实感
-                "negative_prompt": "photorealistic, realistic, 3d render, shading, gradients, shadows, depth of field, blurry, low quality, ugly, deformed"
+
+                # 【核心修改 3】负面提示词:
+                # 极力禁止写实、3D 和光影效果。
+                "negative_prompt": "photorealistic, realistic, 3d render, shading, gradients, shadows, depth of field, blurry, low quality, ugly, deformed, grainy"
             }
         )
         
