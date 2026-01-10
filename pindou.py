@@ -3,7 +3,7 @@ from PIL import Image, ImageDraw, ImageFont
 import io
 import time
 import os
-import tempfile
+import tempfile # 引入临时文件库
 
 # --- 依赖库检测 ---
 try:
@@ -25,7 +25,7 @@ try:
 except ImportError:
     HAS_HF = False
 
-# --- 1. MARD 色卡数据 (拼豆功能用) ---
+# --- 1. MARD 色卡数据 (保持不变) ---
 MARD_PALETTE = {
     "Mard A1": (250, 245, 205), "Mard A2": (252, 254, 214), "Mard A3": (255, 255, 146),
     "Mard A4": (247, 236, 92),  "Mard A5": (255, 228, 75),  "Mard A6": (253, 169, 81),
@@ -141,7 +141,6 @@ def create_printable_sheet(grid_data, color_map, width, height):
     grid_start_x = margin + coord_offset_x
     grid_start_y = margin + coord_offset_y
 
-    # 绘制坐标数字
     for x in range(width):
         text = str(x + 1)
         text_pos_x = grid_start_x + x * cell_size + (10 if len(text) == 1 else 5) 
@@ -154,7 +153,6 @@ def create_printable_sheet(grid_data, color_map, width, height):
         text_pos_y = grid_start_y + y * cell_size + 8
         draw.text((text_pos_x, text_pos_y), text, fill="black")
 
-    # 绘制网格与色号
     for y, row in enumerate(grid_data):
         for x, cell in enumerate(row):
             top_left_x = grid_start_x + x * cell_size
@@ -171,7 +169,6 @@ def create_printable_sheet(grid_data, color_map, width, height):
             else:
                 draw.rectangle([top_left_x, top_left_y, bottom_right_x, bottom_right_y], fill="white", outline="lightgray")
 
-    # 绘制粗线
     for i in range(0, width + 1, 10):
         line_x = grid_start_x + i * cell_size
         draw.line([(line_x, margin), (line_x, img_height - margin)], fill="black", width=2)
@@ -182,36 +179,34 @@ def create_printable_sheet(grid_data, color_map, width, height):
 
     return sheet
 
-# --- 3. 云端动漫风格化 (Hugging Face Free API) ---
+# --- 【核心修复】3. 云端动漫风格化 (Hugging Face Free API) ---
 def generate_anime_style_hf(image_file, style_prompt, api_token):
-    """使用 Hugging Face 的免费 Inference API"""
+    """使用 Hugging Face 的免费 Inference API (修复：强制使用临时文件解决格式问题)"""
     if not HAS_HF:
         st.error("⚠️ 未安装 huggingface_hub 库。")
         return None
     
-    # 实例化客户端
     client = InferenceClient(token=api_token)
-    
-    # 定义模型：SDXL Base
     model_id = "stabilityai/stable-diffusion-xl-base-1.0"
     
-    # 构造增强提示词
     full_prompt = f"{style_prompt}, high quality, detailed, keeping the original composition."
     negative_prompt = "blurry, low quality, distortion, deformed, ugly, bad anatomy"
 
-    try:
-        # 将 PIL Image 转为 Bytes
-        img_byte_arr = io.BytesIO()
-        image_file.save(img_byte_arr, format=image_file.format)
-        img_bytes = img_byte_arr.getvalue()
+    # --- 关键修复：创建临时文件 ---
+    # Hugging Face 需要一个明确的文件路径来判断这是 jpg 还是 png
+    # 直接发内存 bytes 会导致 "unknown file extension"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as temp_file:
+        image_file.save(temp_file.name, format="PNG")
+        temp_file_path = temp_file.name
 
-        # 调用 API (image_to_image)
+    try:
+        # 传递临时文件路径，而不是 bytes
         result_image = client.image_to_image(
-            image=img_bytes,
+            image=temp_file_path, 
             prompt=full_prompt,
             negative_prompt=negative_prompt,
             model=model_id,
-            strength=0.75, # 风格化强度
+            strength=0.75,
             guidance_scale=7.5
         )
         return result_image
@@ -219,6 +214,10 @@ def generate_anime_style_hf(image_file, style_prompt, api_token):
     except Exception as e:
         st.error(f"Hugging Face API 调用失败 (可能是排队人太多，请稍后再试): {e}")
         return None
+    finally:
+        # 清理临时文件
+        if os.path.exists(temp_file_path):
+            os.remove(temp_file_path)
 
 
 # --- 主程序 ---
@@ -392,15 +391,12 @@ elif app_mode == "✨ AI 风格化 (免费版)":
         st.error("⚠️ 严重错误：未检测到 `huggingface_hub` 库。请检查 requirements.txt。")
         st.stop()
 
-    # --- API 密钥管理逻辑 (核心修改) ---
+    # --- API 密钥管理逻辑 ---
     api_token = None
-    
-    # 1. 优先尝试从 Secrets 获取
     if "HF_TOKEN" in st.secrets:
         api_token = st.secrets["HF_TOKEN"]
         st.sidebar.success("✅ 已从 Secrets 自动加载 Token")
     else:
-        # 2. 如果没有，则显示手动输入框
         st.sidebar.warning("⚠️ 未检测到 Secrets 配置，请手动输入")
         api_token = st.sidebar.text_input("输入 Hugging Face Token (hf_...)", type="password", help="去 huggingface.co/settings/tokens 免费创建一个")
     
@@ -422,11 +418,11 @@ elif app_mode == "✨ AI 风格化 (免费版)":
         on_change=clear_hf_results
     )
     
-    # --- 风格定义 ---
+    # --- 优化后的卡通风格提示词 ---
     STYLE_PROMPTS = {
-        "🇯🇵 Irasutoya (日式插画)": "flat illustration style of Irasutoya, cute, simple line art, charming, Japanese clip art standard style, no shading, solid colors",
+        "🇯🇵 Irasutoya (日式插画)": "irasutoya style, flat illustration, simple character, thick outlines, minimal shading, white background, japanese clip art, vector art, flat color",
         "🏞️ 吉卜力 (Ghibli)": "Studio Ghibli anime still, hand drawn watercolor texture, rich colors, fresh greens and deep blues, soft natural lighting, nostalgic, comforting atmosphere, highly detailed background, hayao miyazaki style",
-        "🎀 Hello Kitty 画风": "Sanrio Hello Kitty animated style, cartoon, thick outlines, pastel colors, cute, kawaii, simple character design",
+        "🎀 Hello Kitty 画风": "Sanrio style, Hello Kitty animation style, thick distinct outlines, flat pastel colors, vector art, cute, simple design, cel shading",
         "🐑 手工黏土动画": "Aardman animation style claymation still, handmade plasticine texture, fingerprints visible, soft rounded shapes, warm retro lighting, stop motion feel, tactile",
     }
 
@@ -438,6 +434,7 @@ elif app_mode == "✨ AI 风格化 (免费版)":
         
         st.subheader("🖼️ 图片预览与裁剪")
         enable_anime_crop = st.checkbox("✂️ 启用手动裁剪", value=False, key="hf_crop_check")
+        
         final_anime_input = original_image 
 
         if enable_anime_crop and HAS_CROPPER:
