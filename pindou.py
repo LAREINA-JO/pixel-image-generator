@@ -3,7 +3,8 @@ from PIL import Image, ImageDraw
 import io
 import time
 import os
-import replicate # 核心库：Replicate
+import requests # 新增：用于下载 Replicate 返回的图片
+import replicate
 
 # --- 依赖库检测 ---
 try:
@@ -18,7 +19,7 @@ try:
 except ImportError:
     HAS_CROPPER = False
 
-# --- 1. MARD 色卡数据 (拼豆功能用 - 保持完整) ---
+# --- 1. MARD 色卡数据 (拼豆功能用) ---
 MARD_PALETTE = {
     "Mard A1": (250, 245, 205), "Mard A2": (252, 254, 214), "Mard A3": (255, 255, 146),
     "Mard A4": (247, 236, 92),  "Mard A5": (255, 228, 75),  "Mard A6": (253, 169, 81),
@@ -174,9 +175,7 @@ def create_printable_sheet(grid_data, color_map, width, height):
 def generate_style_replicate(image_file, prompt, api_token):
     """
     使用 Replicate API 调用 SDXL 模型。
-    这是一个商业级的解决方案，速度快，质量高，稳定性极好。
     """
-    # 设置环境变量，replicate 库会自动读取
     os.environ["REPLICATE_API_TOKEN"] = api_token
     
     # 1. 转换为 BytesIO (Replicate 可以直接处理文件流)
@@ -186,20 +185,19 @@ def generate_style_replicate(image_file, prompt, api_token):
 
     try:
         # 使用 stability-ai/sdxl 模型
-        # 这是一个性价比极高的模型，支持 image_prompt (图生图)
+        # Replicate 返回的是一个 URL 列表
         output = replicate.run(
             "stability-ai/sdxl:39ed52f2a78e934b3ba6e2a89f5b1c712de7dfea535525255b1aa35c5565e08b",
             input={
                 "image": img_byte_arr,
                 "prompt": prompt,
-                "strength": 0.75, # 风格化强度 (0-1)，越高越不像原图
+                "strength": 0.75, # 风格化强度 (0-1)
                 "guidance_scale": 7.5,
                 "num_inference_steps": 30,
                 "negative_prompt": "blurry, low quality, distortion, deformed, ugly, bad anatomy, realistic, photo, 3d render"
             }
         )
         
-        # Replicate 返回的是一个 URL 列表
         if output and len(output) > 0:
             return output[0]
         return None
@@ -392,9 +390,32 @@ elif app_mode == "✨ AI 风格化 (Replicate版)":
 
         if st.session_state.anime_results_rep:
             style_name, img_url = st.session_state.anime_results_rep
-            st.image(img_url, caption=f"生成风格：{style_name}", use_container_width=True)
-            st.markdown(f"[👉 点击下载高清原图]({img_url})")
-            st.caption("提示：右键点击图片 -> '图片另存为' 即可保存。")
+            
+            # 【核心修复点】下载 URL 对应的图片数据再显示
+            # 这样避免 Streamlit 直接解析复杂 URL 对象导致的 AttributeError
+            try:
+                # 尝试下载图片
+                resp = requests.get(img_url, timeout=10)
+                if resp.status_code == 200:
+                    image_bytes = io.BytesIO(resp.content)
+                    image_pil = Image.open(image_bytes)
+                    
+                    st.image(image_pil, caption=f"生成风格：{style_name}", use_container_width=True)
+                    
+                    # 下载按钮也使用这些 bytes
+                    file_root = os.path.splitext(uploaded_anime_file.name)[0]
+                    # 安全的文件名
+                    safe_style = style_name.split(" ")[1] if " " in style_name else "style"
+                    download_name = f"{file_root}_ai_{safe_style}.jpg"
+                    
+                    st.download_button("📥 下载高清大图", data=image_bytes, file_name=download_name, mime="image/jpeg")
+                else:
+                    st.error(f"无法下载生成的图片，服务器返回状态码: {resp.status_code}")
+                    # 备用方案：显示链接让用户自己点
+                    st.markdown(f"[👉 点击这里直接打开图片]({img_url})")
+            except Exception as e:
+                st.error(f"显示图片时出错: {e}")
+                st.markdown(f"[👉 点击这里直接打开图片]({img_url})")
 
     else:
         st.info("👈 请先在左侧上传照片")
