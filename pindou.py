@@ -257,7 +257,7 @@ if 'last_uploaded_file' not in st.session_state:
 # 功能模块 1: 拼豆图纸生成
 # ==========================================
 if app_mode == "🧩 拼豆图纸生成":
-    st.title("🧩 专业版拼豆图纸生成器 (Mard色系)")
+    st.title("拼豆图纸生成器 (Mard色系)")
     
     if 'pindou_grid' not in st.session_state:
         st.session_state.pindou_grid = None
