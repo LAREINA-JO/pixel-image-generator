@@ -1,5 +1,5 @@
 import streamlit as st
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 import io
 
 # 尝试导入高级库
@@ -112,7 +112,11 @@ MARD_PALETTE = {
     "Mard M13": (199, 146, 102), "Mard M14": (195, 116, 99), "Mard M15": (116, 125, 122),
 }
 
-def find_closest_color(pixel):
+# --- 2. 核心函数 ---
+
+# [修改] 现在接受一个 palette 参数，默认为全量 MARD_PALETTE
+def find_closest_color(pixel, palette=MARD_PALETTE):
+    # 处理透明通道
     if len(pixel) == 4 and pixel[3] < 128:
         return None, (255, 255, 255, 0)
     
@@ -121,7 +125,7 @@ def find_closest_color(pixel):
     closest_rgb = (0, 0, 0)
     r, g, b = pixel[:3]
 
-    for name, (cr, cg, cb) in MARD_PALETTE.items():
+    for name, (cr, cg, cb) in palette.items():
         # 加权欧几里得距离，提升人眼感知准确度
         dist = ((r - cr)*0.30)**2 + ((g - cg)*0.59)**2 + ((b - cb)*0.11)**2
         if dist < min_dist:
@@ -129,6 +133,38 @@ def find_closest_color(pixel):
             closest_name = name
             closest_rgb = (cr, cg, cb)
     return closest_name, closest_rgb
+
+# --- 辅助函数：自动缩减色卡 ---
+def reduce_palette_to_n(image, max_colors):
+    """
+    1. 将图像量化为 max_colors 种颜色。
+    2. 找出这些颜色分别对应最接近的 Mard 色号。
+    3. 返回一个新的、仅包含这些色号的字典。
+    """
+    # 必须转换为 RGB 进行量化 (排除 Alpha 干扰)
+    img_rgb = image.convert("RGB")
+    
+    # 使用 PIL 内置的量化算法提取最主要的颜色
+    quantized_img = img_rgb.quantize(colors=max_colors)
+    
+    # 获取量化后的色板 (是一个平铺的列表 [r,g,b, r,g,b, ...])
+    # PIL 的 palette 长度通常是 768 (256色 * 3)，我们需要截取实际用到的部分
+    palette_list = quantized_img.getpalette()[:max_colors*3]
+    
+    subset_palette = {}
+    
+    # 遍历量化出的每一种颜色，找到最接近的 Mard 颜色
+    for i in range(0, len(palette_list), 3):
+        r = palette_list[i]
+        g = palette_list[i+1]
+        b = palette_list[i+2]
+        
+        # 这里的 find_closest_color 还是去全量库里找
+        name, rgb = find_closest_color((r, g, b), MARD_PALETTE)
+        if name:
+            subset_palette[name] = rgb
+            
+    return subset_palette
 
 def create_printable_sheet(grid_data, color_map, width, height):
     # 配置
@@ -207,7 +243,7 @@ if 'result_stats' not in st.session_state:
 if 'result_dims' not in st.session_state:
     st.session_state.result_dims = (0, 0)
 
-# 【关键功能】回调函数：当上传的文件变化时，清空之前的结果
+# 回调函数：当上传的文件变化时，清空之前的结果
 def reset_results():
     st.session_state.result_grid = None
     st.session_state.result_stats = None
@@ -222,9 +258,23 @@ uploaded_file = st.sidebar.file_uploader(
 
 st.sidebar.header("2. 生成设置")
 use_rembg = st.sidebar.checkbox("启用智能抠图 (去除背景)", value=False)
-# [新增功能] 镜像翻转选项
 mirror_mode = st.sidebar.checkbox("↔️ 开启镜像翻转 (适用于反向拼烫)", value=False)
 target_width = st.sidebar.slider("目标宽度 (格/豆)", 10, 100, 40)
+
+# [新增功能] 限制颜色数量设置
+st.sidebar.markdown("---")
+st.sidebar.subheader("🎨 颜色管理")
+enable_color_limit = st.sidebar.checkbox("限制最大使用颜色数量", value=False)
+max_color_count = 200 # 默认不限制
+if enable_color_limit:
+    max_color_count = st.sidebar.number_input(
+        "最大颜色数量 (建议 10-30)", 
+        min_value=2, 
+        max_value=60, 
+        value=15,
+        step=1
+    )
+
 generate_btn = st.sidebar.button("🚀 开始生成图纸")
 
 if use_rembg and not HAS_REMBG:
@@ -255,11 +305,11 @@ if uploaded_file:
         st.image(original_image, caption="完整原图预览", width=300)
 
     if generate_btn:
-        with st.spinner("正在匹配 200+ 种 Mard 颜色..."):
+        with st.spinner("正在分析图片并生成图纸..."):
             # 获取需要处理的基础图片 (原图或裁剪后的图)
             img_to_process = final_processing_img
             
-            # [新增功能] 如果勾选了镜像，在这里进行水平翻转
+            # 镜像翻转
             if mirror_mode:
                 img_to_process = img_to_process.transpose(Image.FLIP_LEFT_RIGHT)
 
@@ -270,6 +320,7 @@ if uploaded_file:
                 except Exception as e:
                     st.error(f"抠图出错: {e}")
 
+            # 计算尺寸并缩放
             aspect_ratio = img_to_process.height / img_to_process.width
             target_height = int(target_width * aspect_ratio)
             
@@ -279,7 +330,24 @@ if uploaded_file:
                 resample_method = Image.BILINEAR
             
             small_img = img_to_process.resize((target_width, target_height), resample_method)
+
+            # --- [新增逻辑] 颜色缩减 ---
+            # 默认为全量色卡
+            active_palette = MARD_PALETTE
+            palette_msg = "使用全量 Mard 色卡 (200+ 色)"
             
+            if enable_color_limit:
+                try:
+                    # 获取该图片专用的精简色卡 (比如只有15个最常用的颜色)
+                    active_palette = reduce_palette_to_n(small_img, max_color_count)
+                    palette_msg = f"已将颜色限制为: {len(active_palette)} 种 (基于图像分析)"
+                except Exception as e:
+                    st.warning(f"颜色缩减算法出错，将使用全量色卡: {e}")
+
+            # 显示当前使用的策略
+            st.info(palette_msg)
+
+            # --- 生成网格数据 ---
             pixel_data = small_img.load()
             grid_data = []
             color_usage = {}
@@ -288,7 +356,8 @@ if uploaded_file:
                 row = []
                 for x in range(target_width):
                     pixel = pixel_data[x, y]
-                    c_name, c_rgb = find_closest_color(pixel)
+                    # 注意：这里传入了 active_palette，强制只在选定的颜色范围内查找
+                    c_name, c_rgb = find_closest_color(pixel, active_palette)
                     
                     if c_name:
                         color_usage[c_name] = color_usage.get(c_name, 0) + 1
@@ -301,7 +370,7 @@ if uploaded_file:
             st.session_state.result_stats = color_usage
             st.session_state.result_dims = (target_width, target_height)
 
-    # 只有当 Session State 里有数据（且没有被清空）时，才显示结果
+    # 结果显示逻辑
     if st.session_state.result_grid is not None:
         st.markdown("---")
         st.subheader("🎨 步骤二：生成结果")
@@ -310,27 +379,34 @@ if uploaded_file:
         color_usage = st.session_state.result_stats
         t_w, t_h = st.session_state.result_dims
 
+        # 显示颜色用量统计 (方便用户购买)
+        with st.expander(f"📊 颜色用量统计 (共使用 {len(color_usage)} 种颜色)", expanded=True):
+            cols = st.columns(4)
+            sorted_usage = sorted(color_usage.items(), key=lambda x: x[1], reverse=True)
+            for idx, (name, count) in enumerate(sorted_usage):
+                rgb = MARD_PALETTE.get(name, (0,0,0))
+                hex_c = '#%02x%02x%02x' % rgb
+                # 用 markdown 画个小色块
+                cols[idx % 4].markdown(
+                    f"<span style='display:inline-block;width:12px;height:12px;background:{hex_c};border:1px solid #ccc;border-radius:50%;'></span> **{name}**: {count} 颗", 
+                    unsafe_allow_html=True
+                )
+
         t1, t2 = st.tabs(["🖼️ 交互式网格图 (Web)", "🖨️ 打印用高清图纸 (JPG)"])
 
         with t1:
             st.caption("👇 鼠标移动到格子上，会立即显示色号与RGB数值。")
             
-            # --- 构建 HTML 表格，加入行列号 ---
-            
-            # 1. 表头行 (X轴坐标)
-            html_rows = "<tr><th style='background:none; border:none;'></th>" # 左上角空白
+            # --- 构建 HTML 表格 ---
+            html_rows = "<tr><th style='background:none; border:none;'></th>" 
             for x in range(t_w):
-                # 每5个数字加粗，方便阅读
                 fw = "bold" if (x+1)%5==0 else "normal"
                 col_color = "#333" if (x+1)%5==0 else "#999"
                 html_rows += f"<th class='axis-x' style='color:{col_color}; font-weight:{fw}'>{x+1}</th>"
             html_rows += "</tr>"
 
-            # 2. 数据行
             for y, row in enumerate(grid_data):
                 html_rows += "<tr>"
-                
-                # 行首 (Y轴坐标)
                 fw = "bold" if (y+1)%5==0 else "normal"
                 col_color = "#333" if (y+1)%5==0 else "#999"
                 html_rows += f"<td class='axis-y' style='color:{col_color}; font-weight:{fw}'>{y+1}</td>"
@@ -340,7 +416,6 @@ if uploaded_file:
                         short_name = cell['name'].replace("Mard ", "")
                         rgb_str = f"RGB{cell['color']}"
                         tooltip = f"{short_name}  {rgb_str}"
-                        
                         html_rows += f'<td class="pixel-cell" style="background-color: {cell["hex"]};" data-name="{tooltip}"></td>'
                     else:
                         html_rows += '<td class="pixel-cell empty"></td>'
@@ -351,85 +426,16 @@ if uploaded_file:
             <html>
             <head>
             <style>
-                body {{
-                    background-color: #ffffff !important;
-                    margin: 0;
-                    padding: 20px;
-                    font-family: sans-serif;
-                }}
-                .container {{
-                    display: flex;
-                    justify-content: center;
-                    padding-top: 50px;
-                    padding-bottom: 50px;
-                    overflow-x: auto;
-                }}
-                .pixel-grid {{
-                    border-collapse: separate;
-                    border-spacing: 0;
-                    background-color: white;
-                }}
-                
-                /* 坐标轴样式 */
-                .axis-x {{
-                    width: 20px;
-                    font-size: 10px;
-                    text-align: center;
-                    vertical-align: bottom;
-                    padding-bottom: 2px;
-                    border: none;
-                }}
-                .axis-y {{
-                    height: 20px;
-                    font-size: 10px;
-                    text-align: right;
-                    padding-right: 5px;
-                    border: none;
-                    white-space: nowrap;
-                }}
-
-                .pixel-cell {{
-                    width: 20px;
-                    min-width: 20px;
-                    height: 20px;
-                    border: 1px solid #ddd;
-                    position: relative;
-                    box-sizing: border-box; 
-                }}
-                .pixel-cell.empty {{
-                    background-color: #f8f8f8;
-                    border: 1px dashed #eee;
-                }}
-                .pixel-cell:hover::after {{
-                    content: attr(data-name);
-                    position: absolute;
-                    bottom: 110%;
-                    left: 50%;
-                    transform: translateX(-50%);
-                    background-color: #333;
-                    color: #fff;
-                    padding: 5px 10px;
-                    border-radius: 4px;
-                    font-size: 12px;
-                    white-space: nowrap;
-                    z-index: 999;
-                    pointer-events: none;
-                }}
-                .pixel-cell:hover::before {{
-                    content: '';
-                    position: absolute;
-                    bottom: 90%;
-                    left: 50%;
-                    transform: translateX(-50%);
-                    border-width: 6px;
-                    border-style: solid;
-                    border-color: #333 transparent transparent transparent;
-                    z-index: 999;
-                }}
-                .pixel-cell:hover {{
-                    border: 2px solid #333;
-                    z-index: 10;
-                }}
+                body {{ background-color: #ffffff !important; margin: 0; padding: 20px; font-family: sans-serif; }}
+                .container {{ display: flex; justify-content: center; padding-top: 50px; padding-bottom: 50px; overflow-x: auto; }}
+                .pixel-grid {{ border-collapse: separate; border-spacing: 0; background-color: white; }}
+                .axis-x {{ width: 20px; font-size: 10px; text-align: center; vertical-align: bottom; padding-bottom: 2px; border: none; }}
+                .axis-y {{ height: 20px; font-size: 10px; text-align: right; padding-right: 5px; border: none; white-space: nowrap; }}
+                .pixel-cell {{ width: 20px; min-width: 20px; height: 20px; border: 1px solid #ddd; position: relative; box-sizing: border-box; }}
+                .pixel-cell.empty {{ background-color: #f8f8f8; border: 1px dashed #eee; }}
+                .pixel-cell:hover::after {{ content: attr(data-name); position: absolute; bottom: 110%; left: 50%; transform: translateX(-50%); background-color: #333; color: #fff; padding: 5px 10px; border-radius: 4px; font-size: 12px; white-space: nowrap; z-index: 999; pointer-events: none; }}
+                .pixel-cell:hover::before {{ content: ''; position: absolute; bottom: 90%; left: 50%; transform: translateX(-50%); border-width: 6px; border-style: solid; border-color: #333 transparent transparent transparent; z-index: 999; }}
+                .pixel-cell:hover {{ border: 2px solid #333; z-index: 10; }}
             </style>
             </head>
             <body>
