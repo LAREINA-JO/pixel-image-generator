@@ -133,16 +133,12 @@ def find_closest_color(pixel):
 def create_printable_sheet(grid_data, color_map, width, height):
     # 配置
     cell_size = 30
-    margin = 60 # [修改] 增加边距以容纳行列号
-    # 不再保留右侧图例区域
+    margin = 60 # 边距以容纳行列号
     img_width = margin * 2 + width * cell_size 
     img_height = margin * 2 + height * cell_size
     
     sheet = Image.new("RGB", (img_width, img_height), "white")
     draw = ImageDraw.Draw(sheet)
-    
-    # [修改] 为了绘制文字，需要加载字体，这里使用默认字体
-    # 如果想用更好看的字体，可以用 ImageFont.truetype("arial.ttf", 10)
     
     # 绘制网格
     for y, row in enumerate(grid_data):
@@ -168,7 +164,7 @@ def create_printable_sheet(grid_data, color_map, width, height):
             else:
                 draw.rectangle([top_left_x, top_left_y, bottom_right_x, bottom_right_y], fill="white", outline="lightgray")
 
-    # [修改] 绘制 10x10 粗线 和 边框线
+    # 绘制 10x10 粗线 和 边框线
     for i in range(0, width + 1, 10):
         line_x = margin + i * cell_size
         draw.line([(line_x, margin), (line_x, margin + height * cell_size)], fill="black", width=2)
@@ -176,16 +172,14 @@ def create_printable_sheet(grid_data, color_map, width, height):
         line_y = margin + i * cell_size
         draw.line([(margin, line_y), (margin + width * cell_size, line_y)], fill="black", width=2)
 
-    # --- [新增] 绘制行列号 ---
+    # --- 绘制行列号 ---
     # 1. 顶部列号 (X轴)
     for x in range(width):
         num_str = str(x + 1)
-        # 简单计算居中位置
         text_w = len(num_str) * 6
         x_pos = margin + x * cell_size + (cell_size - text_w) / 2
-        y_pos = margin - 15 # 显示在网格上方
+        y_pos = margin - 15 
         
-        # 重点显示整10的数字，其他用灰色或者每5个显示一次？这里为了方便全部显示
         fill_color = "black" if (x + 1) % 5 == 0 else "gray"
         draw.text((x_pos + 3, y_pos), num_str, fill=fill_color)
 
@@ -193,8 +187,8 @@ def create_printable_sheet(grid_data, color_map, width, height):
     for y in range(height):
         num_str = str(y + 1)
         text_w = len(num_str) * 6
-        x_pos = margin - text_w - 5 # 显示在网格左侧
-        y_pos = margin + y * cell_size + 8 # 垂直居中
+        x_pos = margin - text_w - 5 
+        y_pos = margin + y * cell_size + 8 
         
         fill_color = "black" if (y + 1) % 5 == 0 else "gray"
         draw.text((x_pos, y_pos), num_str, fill=fill_color)
@@ -220,7 +214,6 @@ def reset_results():
     st.session_state.result_dims = (0, 0)
 
 st.sidebar.header("1. 上传图片")
-# 【修复点】添加 on_change=reset_results
 uploaded_file = st.sidebar.file_uploader(
     "支持 JPG/PNG/WEBP", 
     type=["jpg", "png", "jpeg", "webp"],
@@ -229,6 +222,8 @@ uploaded_file = st.sidebar.file_uploader(
 
 st.sidebar.header("2. 生成设置")
 use_rembg = st.sidebar.checkbox("启用智能抠图 (去除背景)", value=False)
+# [新增功能] 镜像翻转选项
+mirror_mode = st.sidebar.checkbox("↔️ 开启镜像翻转 (适用于反向拼烫)", value=False)
 target_width = st.sidebar.slider("目标宽度 (格/豆)", 10, 100, 40)
 generate_btn = st.sidebar.button("🚀 开始生成图纸")
 
@@ -261,7 +256,14 @@ if uploaded_file:
 
     if generate_btn:
         with st.spinner("正在匹配 200+ 种 Mard 颜色..."):
+            # 获取需要处理的基础图片 (原图或裁剪后的图)
             img_to_process = final_processing_img
+            
+            # [新增功能] 如果勾选了镜像，在这里进行水平翻转
+            if mirror_mode:
+                img_to_process = img_to_process.transpose(Image.FLIP_LEFT_RIGHT)
+
+            # 智能抠图处理
             if use_rembg and HAS_REMBG:
                 try:
                     img_to_process = remove(img_to_process)
@@ -313,7 +315,7 @@ if uploaded_file:
         with t1:
             st.caption("👇 鼠标移动到格子上，会立即显示色号与RGB数值。")
             
-            # --- [修改] 构建 HTML 表格，加入行列号 ---
+            # --- 构建 HTML 表格，加入行列号 ---
             
             # 1. 表头行 (X轴坐标)
             html_rows = "<tr><th style='background:none; border:none;'></th>" # 左上角空白
@@ -363,13 +365,12 @@ if uploaded_file:
                     overflow-x: auto;
                 }}
                 .pixel-grid {{
-                    border-collapse: separate; /* 改为 separate 以避免边框冲突，或者保持 collapse */
+                    border-collapse: separate;
                     border-spacing: 0;
                     background-color: white;
-                    /* box-shadow: 0 0 10px rgba(0,0,0,0.1); 去掉阴影让坐标更贴合 */
                 }}
                 
-                /* [新增] 坐标轴样式 */
+                /* 坐标轴样式 */
                 .axis-x {{
                     width: 20px;
                     font-size: 10px;
@@ -393,7 +394,7 @@ if uploaded_file:
                     height: 20px;
                     border: 1px solid #ddd;
                     position: relative;
-                    box-sizing: border-box; /* 确保边框计算在内 */
+                    box-sizing: border-box; 
                 }}
                 .pixel-cell.empty {{
                     background-color: #f8f8f8;
@@ -425,7 +426,6 @@ if uploaded_file:
                     border-color: #333 transparent transparent transparent;
                     z-index: 999;
                 }}
-                /* [新增] 鼠标悬停时高亮当前单元格边框 */
                 .pixel-cell:hover {{
                     border: 2px solid #333;
                     z-index: 10;
@@ -453,7 +453,6 @@ if uploaded_file:
             printable_img.save(buf, format="JPEG", quality=100)
             st.download_button("📥 下载图纸 (JPG)", data=buf.getvalue(), file_name="pattern_grid_with_ruler.jpg", mime="image/jpeg")
 else:
-    # 如果没有上传文件，这里也可以加个重置，确保干净
     if st.session_state.result_grid is not None:
          reset_results()
     st.info("👈 请先在左侧侧边栏上传一张图片")
