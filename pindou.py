@@ -123,63 +123,60 @@ MARD_PALETTE = {
 
 # --- 2. 核心算法 (优化版: Numpy + Lab + Dithering) ---
 
-def create_quantized_grid_numpy(image, palette_dict, dithering=True):
+def create_quantized_grid_numpy(image, palette_dict, dithering=True, alpha_threshold=128):
     """
-    使用 Numpy 进行极速颜色量化和抖动处理。
+    修复版：直接使用原始 RGB 值，避免边缘发白/变色。
+    alpha_threshold: 透明度门槛 (0-255)，低于此值的像素将被丢弃。
     """
-    # 1. 预处理：确保是 RGBA 并分离 Alpha 通道
+    # 1. 预处理：确保是 RGBA
     img_rgba = image.convert("RGBA")
     w, h = img_rgba.size
     
-    # 转换为 Numpy 数组 (H, W, 4) 范围 0.0-1.0
-    img_arr = np.array(img_rgba) / 255.0
-    alpha_channel = img_arr[:, :, 3]  # 保存透明度用于最后遮罩
-    rgb_channel = img_arr[:, :, :3]   # 只取 RGB 进行计算
+    # 转换为 Numpy 数组 (H, W, 4) 
+    # 注意：这里我们保留 0-255 的整数以便后续直接处理，仅在计算时转 float
+    img_arr = np.array(img_rgba)
     
-    # 预处理：将透明背景混合到白色背景上，避免边缘发黑
-    # Composite over white: Result = Alpha * Color + (1 - Alpha) * White
-    white_bg = np.ones_like(rgb_channel)
-    # 广播 Alpha: (H, W) -> (H, W, 1)
-    alpha_factor = alpha_channel[:, :, np.newaxis]
-    img_rgb_composite = rgb_channel * alpha_factor + white_bg * (1 - alpha_factor)
-
+    # 分离通道
+    alpha_channel = img_arr[:, :, 3] 
+    rgb_channel = img_arr[:, :, :3] # (H, W, 3) 原始颜色，不混合背景
+    
     # 2. 准备色卡数据
     palette_names = list(palette_dict.keys())
-    # 转为 (N, 3) 数组
-    palette_rgb = np.array([palette_dict[name] for name in palette_names]) / 255.0
+    palette_rgb = np.array([palette_dict[name] for name in palette_names]) # (N, 3) 0-255 Int
     
     # 结果容器
     result_grid = [[None for _ in range(w)] for _ in range(h)]
     color_counts = {}
 
+    # 将色卡转为 float 用于计算
+    palette_rgb_float = palette_rgb.astype(float)
+
     if dithering:
         # --- 模式 A: 开启抖动 (Floyd-Steinberg) ---
-        # 使用加权 RGB 距离 (Redmean) + 误差扩散，因为 Lab 实时计算太慢
-        
-        # 恢复到 0-255 范围进行误差计算（更直观）
-        current_pixels = img_rgb_composite * 255.0
-        palette_rgb_255 = palette_rgb * 255.0
+        # 使用 float 类型进行误差传递计算
+        current_pixels = rgb_channel.astype(float)
         
         for y in range(h):
             for x in range(w):
-                # 如果完全透明，跳过计算
-                if alpha_channel[y, x] < 0.5:
+                # 【核心修复】严格的 Alpha 过滤
+                # 只有当 Alpha 大于阈值时才生成拼豆，且不混合白色背景
+                if alpha_channel[y, x] < alpha_threshold:
                     result_grid[y][x] = None
                     continue
 
                 old_rgb = current_pixels[y, x].copy()
                 
-                # --- Redmean 近似距离算法 (比 Lab 快 50 倍，效果接近) ---
-                rmean = (old_rgb[0] + palette_rgb_255[:, 0]) / 2
-                dr = old_rgb[0] - palette_rgb_255[:, 0]
-                dg = old_rgb[1] - palette_rgb_255[:, 1]
-                db = old_rgb[2] - palette_rgb_255[:, 2]
+                # --- Redmean 距离算法 ---
+                rmean = (old_rgb[0] + palette_rgb_float[:, 0]) / 2
+                dr = old_rgb[0] - palette_rgb_float[:, 0]
+                dg = old_rgb[1] - palette_rgb_float[:, 1]
+                db = old_rgb[2] - palette_rgb_float[:, 2]
                 
                 dists_sq = (2 + rmean/256) * (dr**2) + 4 * (dg**2) + (2 + (255-rmean)/256) * (db**2)
                 
                 idx = np.argmin(dists_sq)
                 best_name = palette_names[idx]
-                best_rgb = palette_rgb_255[idx] # 也是 0-255 float
+                best_rgb = palette_rgb_float[idx]
                 
                 # 记录结果
                 rgb_int = tuple(best_rgb.astype(int))
@@ -189,64 +186,53 @@ def create_quantized_grid_numpy(image, palette_dict, dithering=True):
                 # 计算误差
                 quant_error = old_rgb - best_rgb
                 
-                # Floyd-Steinberg 误差扩散
-                # x+1, y
+                # 误差扩散：注意不要把误差扩散到完全透明的区域，否则会在边缘产生奇怪的噪点
+                # 我们可以加一个简单的判断，或者直接扩散（因为下一轮循环会通过 alpha 过滤掉透明区域的绘制）
+                
                 if x + 1 < w:
                     current_pixels[y, x+1] += quant_error * 7 / 16
-                # x-1, y+1
-                if y + 1 < h and x - 1 >= 0:
-                    current_pixels[y+1, x-1] += quant_error * 3 / 16
-                # x, y+1
                 if y + 1 < h:
+                    if x - 1 >= 0:
+                        current_pixels[y+1, x-1] += quant_error * 3 / 16
                     current_pixels[y+1, x] += quant_error * 5 / 16
-                # x+1, y+1
-                if y + 1 < h and x + 1 < w:
-                    current_pixels[y+1, x+1] += quant_error * 1 / 16
+                    if x + 1 < w:
+                        current_pixels[y+1, x+1] += quant_error * 1 / 16
         
     else:
-        # --- 模式 B: 关闭抖动 (全矩阵 Lab 极速匹配) ---
+        # --- 模式 B: 关闭抖动 (无误差扩散) ---
         if HAS_SKIMAGE:
-            # 使用 skimage 进行高质量 Lab 转换
-            # 1. 转换色卡
-            palette_lab = sk_color.rgb2lab(palette_rgb)
-            # 2. 转换原图
-            img_lab = sk_color.rgb2lab(img_rgb_composite)
+            # 转换色卡为 Lab
+            palette_lab = sk_color.rgb2lab(palette_rgb / 255.0)
+            # 转换原图为 Lab (注意：这里直接用原始 RGB，不混合白色)
+            img_lab = sk_color.rgb2lab(rgb_channel / 255.0)
             
-            # 展平以便广播: (H*W, 3)
             flat_img = img_lab.reshape(-1, 3)
             
-            # 寻找最近颜色 (欧几里得距离 in Lab space = CIE76 Delta E)
-            # 分块计算防止内存溢出
             indices = []
             chunk_size = 2000 
             for i in range(0, len(flat_img), chunk_size):
                 chunk = flat_img[i:i+chunk_size]
-                # Broadcasting: (ChunkSize, 1, 3) - (1, N_Palette, 3)
                 diff = chunk[:, np.newaxis, :] - palette_lab[np.newaxis, :, :]
-                dists = np.sum(diff**2, axis=2) # 不用开方，比起大效果一样
+                dists = np.sum(diff**2, axis=2)
                 indices.append(np.argmin(dists, axis=1))
             
             indices = np.concatenate(indices)
             
-            # 重组回网格
             for idx_flat, palette_idx in enumerate(indices):
                 y, x = divmod(idx_flat, w)
                 
-                # 透明度检查
-                if alpha_channel[y, x] < 0.5:
+                # 【核心修复】严格过滤透明度
+                if alpha_channel[y, x] < alpha_threshold:
                     result_grid[y][x] = None
                     continue
                     
                 name = palette_names[palette_idx]
-                # 获取原始 RGB 整数值
-                rgb_int = tuple(np.array(MARD_PALETTE[name]).astype(int))
+                rgb_int = tuple(palette_rgb[palette_idx].astype(int))
                 
                 color_counts[name] = color_counts.get(name, 0) + 1
                 result_grid[y][x] = {'color': rgb_int, 'name': name, 'hex': '#%02x%02x%02x' % rgb_int}
         else:
-            # Fallback (如果没有安装 skimage，使用简单的 RGB 欧几里得)
-            st.error("缺少 scikit-image 库，降级使用 RGB 匹配。请安装依赖。")
-            # ... (此处省略 RGB fallback，通常环境都有 skimage) ...
+             st.error("缺少 scikit-image 库")
 
     return result_grid, color_counts
 
@@ -364,6 +350,14 @@ st.sidebar.header("2. 生成设置")
 use_rembg = st.sidebar.checkbox("启用智能抠图 (去除背景)", value=False)
 mirror_mode = st.sidebar.checkbox("↔️ 镜像翻转", value=False)
 target_width = st.sidebar.slider("目标宽度 (格/豆)", 10, 100, 40)
+# 【新增】边缘处理阈值
+alpha_threshold = st.sidebar.slider(
+    "边缘过滤阈值 (去除杂边)", 
+    min_value=10, 
+    max_value=250, 
+    value=150, 
+    help="值越高，边缘裁剪越干净（减少半透明光晕）；值越低，保留越多边缘细节。"
+)
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🎨 颜色与算法")
@@ -445,7 +439,8 @@ if uploaded_file:
                 grid_data, color_usage = create_quantized_grid_numpy(
                     small_img, 
                     active_palette_dict, 
-                    dithering=use_dithering
+                    dithering=use_dithering,
+                    alpha_threshold=alpha_threshold  # <--- 传入这个新参数
                 )
                 
                 st.session_state.result_grid = grid_data
