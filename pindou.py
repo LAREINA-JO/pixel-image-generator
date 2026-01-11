@@ -125,11 +125,21 @@ MARD_PALETTE = {
 
 def create_quantized_grid_numpy(image, palette_dict, dithering=True, alpha_threshold=128):
     """
-    终极完美版：
+    终极版 V3：
     1. 严格 Alpha 过滤。
-    2. 【新增】边缘感知 (Edge-Aware)：如果像素处于边缘，强制关闭该像素的抖动扩散，
-       彻底阻断杂色产生。
+    2. 边缘感知 (Edge-Aware)。
+    3. 【新增】动态抖动强度控制 (Error Damping)。
     """
+    # --- 1. 动态决定抖动强度 ---
+    # 颜色越少，抖动强度越要低，否则噪点爆炸
+    color_count = len(palette_dict)
+    if color_count <= 10:
+        strength = 0.5  # 极少颜色时，只扩散一半误差
+    elif color_count <= 30:
+        strength = 0.7  # 中等颜色，扩散 70%
+    else:
+        strength = 0.9  # 全量颜色，扩散 90% (留一点点余地比1.0更自然)
+
     # 1. 预处理
     img_rgba = image.convert("RGBA")
     w, h = img_rgba.size
@@ -138,7 +148,6 @@ def create_quantized_grid_numpy(image, palette_dict, dithering=True, alpha_thres
     alpha_channel = img_arr[:, :, 3] 
     rgb_channel = img_arr[:, :, :3] 
     
-    # 2. 准备色卡
     palette_names = list(palette_dict.keys())
     palette_rgb = np.array([palette_dict[name] for name in palette_names]) 
     palette_rgb_float = palette_rgb.astype(float)
@@ -147,19 +156,16 @@ def create_quantized_grid_numpy(image, palette_dict, dithering=True, alpha_thres
     color_counts = {}
 
     if dithering:
-        # --- 模式 A: 边缘感知抖动 ---
+        # --- 模式 A: 柔和边缘感知抖动 ---
         current_pixels = rgb_channel.astype(float)
         
         for y in range(h):
             for x in range(w):
-                # 1. 自身透明度检查
                 if alpha_channel[y, x] < alpha_threshold:
                     result_grid[y][x] = None
                     continue
                 
-                # --- 2. 【核心修改】边缘检测 ---
-                # 检查上下左右是否有透明像素 (即是否处于边缘)
-                # 如果是边缘像素，我们就不让它把误差传给别人，也不让它接收过多的误差影响
+                # 边缘检测
                 is_edge = False
                 if x + 1 < w and alpha_channel[y, x+1] < alpha_threshold: is_edge = True
                 elif x - 1 >= 0 and alpha_channel[y, x-1] < alpha_threshold: is_edge = True
@@ -168,7 +174,7 @@ def create_quantized_grid_numpy(image, palette_dict, dithering=True, alpha_thres
                 
                 old_rgb = current_pixels[y, x].copy()
                 
-                # Redmean 距离匹配
+                # Redmean 距离
                 rmean = (old_rgb[0] + palette_rgb_float[:, 0]) / 2
                 dr = old_rgb[0] - palette_rgb_float[:, 0]
                 dg = old_rgb[1] - palette_rgb_float[:, 1]
@@ -185,13 +191,13 @@ def create_quantized_grid_numpy(image, palette_dict, dithering=True, alpha_thres
                 color_counts[best_name] = color_counts.get(best_name, 0) + 1
                 result_grid[y][x] = {'color': rgb_int, 'name': best_name, 'hex': '#%02x%02x%02x' % rgb_int}
                 
-                # --- 3. 误差扩散控制 ---
-                # 只有当像素 "不是边缘" 时，才允许扩散误差。
-                # 这相当于在轮廓线上建立了一道“防火墙”，误差撞到边缘就消失了，不会变成杂色。
+                # --- 误差扩散控制 ---
                 if not is_edge:
-                    quant_error = old_rgb - best_rgb
+                    # 【关键】这里乘以 strength 系数
+                    # 如果颜色很少，strength 只有 0.6，意味着 40% 的误差被“吞掉”了，
+                    # 从而防止了噪点在画面中无限蔓延。
+                    quant_error = (old_rgb - best_rgb) * strength
                     
-                    # 只有目标像素也是"非透明"的，才传误差 (双重保险)
                     if x + 1 < w and alpha_channel[y, x+1] >= alpha_threshold:
                         current_pixels[y, x+1] += quant_error * 7 / 16
                     if y + 1 < h:
@@ -203,7 +209,8 @@ def create_quantized_grid_numpy(image, palette_dict, dithering=True, alpha_thres
                             current_pixels[y+1, x+1] += quant_error * 1 / 16
         
     else:
-        # --- 模式 B: 关闭抖动 (无变化) ---
+        # --- 模式 B: 关闭抖动 ---
+        # (保持之前的逻辑不变)
         if HAS_SKIMAGE:
             palette_lab = sk_color.rgb2lab(palette_rgb / 255.0)
             img_lab = sk_color.rgb2lab(rgb_channel / 255.0)
@@ -235,31 +242,49 @@ def create_quantized_grid_numpy(image, palette_dict, dithering=True, alpha_thres
 
 def reduce_palette_smart(image, max_colors):
     """
-    智能缩减色卡：提取图片特征色 -> 映射到 Mard 色卡。
+    修正版：只对非透明区域进行颜色提取，确保每一份色额度都用在刀刃上。
     """
-    img_rgb = image.convert("RGB")
-    # 使用 Pillow 的 quantize 快速提取主要颜色
+    # 1. 创建一个白色背景的临时图，避免透明度干扰量化算法
+    img = image.convert("RGBA")
+    bg = Image.new("RGB", img.size, (255, 255, 255))
+    # 使用 Alpha 通道作为蒙版进行混合
+    bg.paste(img, mask=img.split()[3])
+    
+    # 2. 量化提取 (增加 method=2 以获得更高质量)
+    # 注意：这里提取稍微多一点 (max_colors + 2)，以防混入白色背景
     try:
-        quantized = img_rgb.quantize(colors=max_colors, method=2) # method=2: MAXCOVERAGE
+        quantized = bg.quantize(colors=max_colors + 2, method=2)
     except:
-        quantized = img_rgb.quantize(colors=max_colors)
+        quantized = bg.quantize(colors=max_colors + 2)
         
-    extracted_palette = quantized.getpalette()[:max_colors*3]
+    extracted_palette = quantized.getpalette()[:(max_colors+2)*3]
     
     selected_keys = set()
     
-    # 简单的寻找最近 Mard 颜色 (这里只用 RGB 距离即可，目的是圈定范围)
+    # 3. 映射到 Mard 色卡
     for i in range(0, len(extracted_palette), 3):
         r, g, b = extracted_palette[i], extracted_palette[i+1], extracted_palette[i+2]
+        
+        # 忽略纯白 (背景) 或极接近白色的颜色，保留给实际物体
+        if r > 250 and g > 250 and b > 250:
+            continue
+            
         min_dist = float('inf')
         best_name = None
+        
+        # 简单的欧几里得距离寻找最近色
         for name, mard_rgb in MARD_PALETTE.items():
             dist = (r - mard_rgb[0])**2 + (g - mard_rgb[1])**2 + (b - mard_rgb[2])**2
             if dist < min_dist:
                 min_dist = dist
                 best_name = name
+        
         if best_name:
             selected_keys.add(best_name)
+            
+            # 如果凑够了数量就停止
+            if len(selected_keys) >= max_colors:
+                break
             
     return list(selected_keys)
 
