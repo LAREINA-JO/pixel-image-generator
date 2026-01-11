@@ -481,41 +481,91 @@ if uploaded_file:
         t1, t2 = st.tabs(["💻 交互式网格", "🖨️ 打印图纸"])
 
         with t1:
-            # HTML/CSS 渲染保持不变，效果很好
+            st.caption("👇 鼠标移动到格子上，会立即显示色号与RGB数值。")
+            
+            # --- 恢复你原来的高清 HTML/CSS 渲染逻辑 ---
             html_rows = "<tr><th style='background:none; border:none;'></th>" 
             for x in range(t_w):
-                col_color = "#333" if (x+1)%5==0 else "#ddd"
                 fw = "bold" if (x+1)%5==0 else "normal"
-                html_rows += f"<th style='color:{col_color}; font-weight:{fw}; font-size:10px; width:15px; text-align:center'>{x+1}</th>"
+                col_color = "#333" if (x+1)%5==0 else "#999"
+                html_rows += f"<th class='axis-x' style='color:{col_color}; font-weight:{fw}'>{x+1}</th>"
             html_rows += "</tr>"
 
             for y, row in enumerate(grid_data):
                 html_rows += "<tr>"
-                col_color = "#333" if (y+1)%5==0 else "#ddd"
                 fw = "bold" if (y+1)%5==0 else "normal"
-                html_rows += f"<td style='color:{col_color}; font-weight:{fw}; font-size:10px; text-align:right; padding-right:4px;'>{y+1}</td>"
+                col_color = "#333" if (y+1)%5==0 else "#999"
+                html_rows += f"<td class='axis-y' style='color:{col_color}; font-weight:{fw}'>{y+1}</td>"
                 
                 for cell in row:
                     if cell:
                         short_name = cell['name'].replace("Mard ", "")
-                        tooltip = f"{short_name} ({cell['color']})"
-                        html_rows += f'<td class="pixel" style="background-color: {cell["hex"]};" title="{tooltip}"></td>'
+                        rgb_str = f"RGB{cell['color']}"
+                        tooltip = f"{short_name}  {rgb_str}"
+                        # 关键：恢复 data-name 属性配合 CSS 实现高清悬浮窗
+                        html_rows += f'<td class="pixel-cell" style="background-color: {cell["hex"]};" data-name="{tooltip}"></td>'
                     else:
-                        html_rows += '<td class="pixel empty"></td>'
+                        html_rows += '<td class="pixel-cell empty"></td>'
                 html_rows += "</tr>"
 
             html_content = f"""
+            <!DOCTYPE html>
+            <html>
+            <head>
             <style>
-                .pixel-table {{ border-spacing: 1px; margin: 0 auto; }}
-                .pixel {{ width: 18px; height: 18px; border: 1px solid rgba(0,0,0,0.1); border-radius: 2px; }}
-                .pixel:hover {{ border: 2px solid #333; transform: scale(1.2); z-index: 10; cursor: crosshair; }}
-                .empty {{ background: repeating-linear-gradient(45deg, #f0f0f0, #f0f0f0 5px, #fff 5px, #fff 10px); }}
+                body {{ background-color: #ffffff !important; margin: 0; padding: 20px; font-family: sans-serif; }}
+                .container {{ display: flex; justify-content: center; padding-top: 50px; padding-bottom: 50px; overflow-x: auto; }}
+                .pixel-grid {{ border-collapse: separate; border-spacing: 0; background-color: white; }}
+                /* 恢复坐标轴样式 */
+                .axis-x {{ width: 20px; font-size: 10px; text-align: center; vertical-align: bottom; padding-bottom: 2px; border: none; }}
+                .axis-y {{ height: 20px; font-size: 10px; text-align: right; padding-right: 5px; border: none; white-space: nowrap; }}
+                /* 恢复格子样式 */
+                .pixel-cell {{ width: 20px; min-width: 20px; height: 20px; border: 1px solid #ddd; position: relative; box-sizing: border-box; }}
+                .pixel-cell.empty {{ background-color: #f8f8f8; border: 1px dashed #eee; }}
+                
+                /* 恢复高清悬浮提示框 (Tooltip) */
+                .pixel-cell:hover::after {{ 
+                    content: attr(data-name); 
+                    position: absolute; 
+                    bottom: 110%; 
+                    left: 50%; 
+                    transform: translateX(-50%); 
+                    background-color: #333; 
+                    color: #fff; 
+                    padding: 5px 10px; 
+                    border-radius: 4px; 
+                    font-size: 12px; 
+                    white-space: nowrap; 
+                    z-index: 999; 
+                    pointer-events: none; 
+                    box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+                }}
+                .pixel-cell:hover::before {{ 
+                    content: ''; 
+                    position: absolute; 
+                    bottom: 90%; 
+                    left: 50%; 
+                    transform: translateX(-50%); 
+                    border-width: 6px; 
+                    border-style: solid; 
+                    border-color: #333 transparent transparent transparent; 
+                    z-index: 999; 
+                }}
+                .pixel-cell:hover {{ border: 2px solid #333; z-index: 10; }}
             </style>
-            <div style="overflow-x: auto; text-align: center; padding: 20px;">
-                <table class="pixel-table">{html_rows}</table>
-            </div>
+            </head>
+            <body>
+                <div class="container">
+                    <table class="pixel-grid">
+                        {html_rows}
+                    </table>
+                </div>
+            </body>
+            </html>
             """
-            st.components.v1.html(html_content, height=min(800, t_h*25+100), scrolling=True)
+            
+            calc_height = max(500, t_h * 24 + 150)
+            st.components.v1.html(html_content, height=calc_height, scrolling=True)
 
         with t2:
             printable_img = create_printable_sheet(grid_data, color_usage, t_w, t_h)
