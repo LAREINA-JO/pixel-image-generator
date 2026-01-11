@@ -1,6 +1,6 @@
 streamlit
-pillow
-numpy
-rembg[cpu]
+Pillow
+rembg
 streamlit-cropper
-replicate
+numpy
+scikit-image
