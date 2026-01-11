@@ -377,7 +377,7 @@ alpha_threshold = st.sidebar.slider(
     "边缘过滤阈值 (去除杂边)", 
     min_value=10, 
     max_value=250, 
-    value=150, 
+    value=70, 
     help="值越高，边缘裁剪越干净（减少半透明光晕）；值越低，保留越多边缘细节。"
 )
 
