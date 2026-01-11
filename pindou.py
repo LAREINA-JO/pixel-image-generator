@@ -125,9 +125,10 @@ MARD_PALETTE = {
 
 def create_quantized_grid_numpy(image, palette_dict, dithering=True, alpha_threshold=128):
     """
-    终极修复版：
+    终极完美版：
     1. 严格 Alpha 过滤。
-    2. 【新增】防抖墙机制：禁止将误差扩散到透明/半透明区域。
+    2. 【新增】边缘感知 (Edge-Aware)：如果像素处于边缘，强制关闭该像素的抖动扩散，
+       彻底阻断杂色产生。
     """
     # 1. 预处理
     img_rgba = image.convert("RGBA")
@@ -146,19 +147,28 @@ def create_quantized_grid_numpy(image, palette_dict, dithering=True, alpha_thres
     color_counts = {}
 
     if dithering:
-        # --- 模式 A: 开启抖动 (带防抖墙) ---
+        # --- 模式 A: 边缘感知抖动 ---
         current_pixels = rgb_channel.astype(float)
         
         for y in range(h):
             for x in range(w):
-                # 1. 自身检查：如果当前像素透明，直接跳过，不产生颜色，也不产生误差
+                # 1. 自身透明度检查
                 if alpha_channel[y, x] < alpha_threshold:
                     result_grid[y][x] = None
                     continue
-
+                
+                # --- 2. 【核心修改】边缘检测 ---
+                # 检查上下左右是否有透明像素 (即是否处于边缘)
+                # 如果是边缘像素，我们就不让它把误差传给别人，也不让它接收过多的误差影响
+                is_edge = False
+                if x + 1 < w and alpha_channel[y, x+1] < alpha_threshold: is_edge = True
+                elif x - 1 >= 0 and alpha_channel[y, x-1] < alpha_threshold: is_edge = True
+                elif y + 1 < h and alpha_channel[y+1, x] < alpha_threshold: is_edge = True
+                elif y - 1 >= 0 and alpha_channel[y-1, x] < alpha_threshold: is_edge = True
+                
                 old_rgb = current_pixels[y, x].copy()
                 
-                # Redmean 距离算法
+                # Redmean 距离匹配
                 rmean = (old_rgb[0] + palette_rgb_float[:, 0]) / 2
                 dr = old_rgb[0] - palette_rgb_float[:, 0]
                 dg = old_rgb[1] - palette_rgb_float[:, 1]
@@ -175,38 +185,30 @@ def create_quantized_grid_numpy(image, palette_dict, dithering=True, alpha_thres
                 color_counts[best_name] = color_counts.get(best_name, 0) + 1
                 result_grid[y][x] = {'color': rgb_int, 'name': best_name, 'hex': '#%02x%02x%02x' % rgb_int}
                 
-                # 计算误差
-                quant_error = old_rgb - best_rgb
-                
-                # --- 2. 邻居检查 (防抖墙) ---
-                # 只有当邻居的 Alpha 值也大于阈值时，才把误差传给它。
-                # 否则，误差直接丢弃 (Drop error)，防止污染边缘。
-                
-                # 右边
-                if x + 1 < w and alpha_channel[y, x+1] >= alpha_threshold:
-                    current_pixels[y, x+1] += quant_error * 7 / 16
-                
-                # 左下
-                if y + 1 < h and x - 1 >= 0 and alpha_channel[y+1, x-1] >= alpha_threshold:
-                    current_pixels[y+1, x-1] += quant_error * 3 / 16
+                # --- 3. 误差扩散控制 ---
+                # 只有当像素 "不是边缘" 时，才允许扩散误差。
+                # 这相当于在轮廓线上建立了一道“防火墙”，误差撞到边缘就消失了，不会变成杂色。
+                if not is_edge:
+                    quant_error = old_rgb - best_rgb
                     
-                # 下边
-                if y + 1 < h and alpha_channel[y+1, x] >= alpha_threshold:
-                    current_pixels[y+1, x] += quant_error * 5 / 16
-                    
-                # 右下
-                if y + 1 < h and x + 1 < w and alpha_channel[y+1, x+1] >= alpha_threshold:
-                    current_pixels[y+1, x+1] += quant_error * 1 / 16
+                    # 只有目标像素也是"非透明"的，才传误差 (双重保险)
+                    if x + 1 < w and alpha_channel[y, x+1] >= alpha_threshold:
+                        current_pixels[y, x+1] += quant_error * 7 / 16
+                    if y + 1 < h:
+                        if x - 1 >= 0 and alpha_channel[y+1, x-1] >= alpha_threshold:
+                            current_pixels[y+1, x-1] += quant_error * 3 / 16
+                        if alpha_channel[y+1, x] >= alpha_threshold:
+                            current_pixels[y+1, x] += quant_error * 5 / 16
+                        if x + 1 < w and alpha_channel[y+1, x+1] >= alpha_threshold:
+                            current_pixels[y+1, x+1] += quant_error * 1 / 16
         
     else:
-        # --- 模式 B: 关闭抖动 ---
+        # --- 模式 B: 关闭抖动 (无变化) ---
         if HAS_SKIMAGE:
             palette_lab = sk_color.rgb2lab(palette_rgb / 255.0)
             img_lab = sk_color.rgb2lab(rgb_channel / 255.0)
-            
             flat_img = img_lab.reshape(-1, 3)
             
-            # 分块计算防止内存溢出
             indices = []
             chunk_size = 2000 
             for i in range(0, len(flat_img), chunk_size):
@@ -214,25 +216,22 @@ def create_quantized_grid_numpy(image, palette_dict, dithering=True, alpha_thres
                 diff = chunk[:, np.newaxis, :] - palette_lab[np.newaxis, :, :]
                 dists = np.sum(diff**2, axis=2)
                 indices.append(np.argmin(dists, axis=1))
-            
             indices = np.concatenate(indices)
             
             for idx_flat, palette_idx in enumerate(indices):
                 y, x = divmod(idx_flat, w)
-                
                 if alpha_channel[y, x] < alpha_threshold:
                     result_grid[y][x] = None
                     continue
-                    
                 name = palette_names[palette_idx]
                 rgb_int = tuple(palette_rgb[palette_idx].astype(int))
-                
                 color_counts[name] = color_counts.get(name, 0) + 1
                 result_grid[y][x] = {'color': rgb_int, 'name': name, 'hex': '#%02x%02x%02x' % rgb_int}
         else:
              st.error("缺少 scikit-image 库")
 
     return result_grid, color_counts
+
 
 def reduce_palette_smart(image, max_colors):
     """
