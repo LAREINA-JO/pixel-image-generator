@@ -125,48 +125,40 @@ MARD_PALETTE = {
 
 def create_quantized_grid_numpy(image, palette_dict, dithering=True, alpha_threshold=128):
     """
-    修复版：直接使用原始 RGB 值，避免边缘发白/变色。
-    alpha_threshold: 透明度门槛 (0-255)，低于此值的像素将被丢弃。
+    终极修复版：
+    1. 严格 Alpha 过滤。
+    2. 【新增】防抖墙机制：禁止将误差扩散到透明/半透明区域。
     """
-    # 1. 预处理：确保是 RGBA
+    # 1. 预处理
     img_rgba = image.convert("RGBA")
     w, h = img_rgba.size
-    
-    # 转换为 Numpy 数组 (H, W, 4) 
-    # 注意：这里我们保留 0-255 的整数以便后续直接处理，仅在计算时转 float
     img_arr = np.array(img_rgba)
     
-    # 分离通道
     alpha_channel = img_arr[:, :, 3] 
-    rgb_channel = img_arr[:, :, :3] # (H, W, 3) 原始颜色，不混合背景
+    rgb_channel = img_arr[:, :, :3] 
     
-    # 2. 准备色卡数据
+    # 2. 准备色卡
     palette_names = list(palette_dict.keys())
-    palette_rgb = np.array([palette_dict[name] for name in palette_names]) # (N, 3) 0-255 Int
+    palette_rgb = np.array([palette_dict[name] for name in palette_names]) 
+    palette_rgb_float = palette_rgb.astype(float)
     
-    # 结果容器
     result_grid = [[None for _ in range(w)] for _ in range(h)]
     color_counts = {}
 
-    # 将色卡转为 float 用于计算
-    palette_rgb_float = palette_rgb.astype(float)
-
     if dithering:
-        # --- 模式 A: 开启抖动 (Floyd-Steinberg) ---
-        # 使用 float 类型进行误差传递计算
+        # --- 模式 A: 开启抖动 (带防抖墙) ---
         current_pixels = rgb_channel.astype(float)
         
         for y in range(h):
             for x in range(w):
-                # 【核心修复】严格的 Alpha 过滤
-                # 只有当 Alpha 大于阈值时才生成拼豆，且不混合白色背景
+                # 1. 自身检查：如果当前像素透明，直接跳过，不产生颜色，也不产生误差
                 if alpha_channel[y, x] < alpha_threshold:
                     result_grid[y][x] = None
                     continue
 
                 old_rgb = current_pixels[y, x].copy()
                 
-                # --- Redmean 距离算法 ---
+                # Redmean 距离算法
                 rmean = (old_rgb[0] + palette_rgb_float[:, 0]) / 2
                 dr = old_rgb[0] - palette_rgb_float[:, 0]
                 dg = old_rgb[1] - palette_rgb_float[:, 1]
@@ -186,28 +178,35 @@ def create_quantized_grid_numpy(image, palette_dict, dithering=True, alpha_thres
                 # 计算误差
                 quant_error = old_rgb - best_rgb
                 
-                # 误差扩散：注意不要把误差扩散到完全透明的区域，否则会在边缘产生奇怪的噪点
-                # 我们可以加一个简单的判断，或者直接扩散（因为下一轮循环会通过 alpha 过滤掉透明区域的绘制）
+                # --- 2. 邻居检查 (防抖墙) ---
+                # 只有当邻居的 Alpha 值也大于阈值时，才把误差传给它。
+                # 否则，误差直接丢弃 (Drop error)，防止污染边缘。
                 
-                if x + 1 < w:
+                # 右边
+                if x + 1 < w and alpha_channel[y, x+1] >= alpha_threshold:
                     current_pixels[y, x+1] += quant_error * 7 / 16
-                if y + 1 < h:
-                    if x - 1 >= 0:
-                        current_pixels[y+1, x-1] += quant_error * 3 / 16
+                
+                # 左下
+                if y + 1 < h and x - 1 >= 0 and alpha_channel[y+1, x-1] >= alpha_threshold:
+                    current_pixels[y+1, x-1] += quant_error * 3 / 16
+                    
+                # 下边
+                if y + 1 < h and alpha_channel[y+1, x] >= alpha_threshold:
                     current_pixels[y+1, x] += quant_error * 5 / 16
-                    if x + 1 < w:
-                        current_pixels[y+1, x+1] += quant_error * 1 / 16
+                    
+                # 右下
+                if y + 1 < h and x + 1 < w and alpha_channel[y+1, x+1] >= alpha_threshold:
+                    current_pixels[y+1, x+1] += quant_error * 1 / 16
         
     else:
-        # --- 模式 B: 关闭抖动 (无误差扩散) ---
+        # --- 模式 B: 关闭抖动 ---
         if HAS_SKIMAGE:
-            # 转换色卡为 Lab
             palette_lab = sk_color.rgb2lab(palette_rgb / 255.0)
-            # 转换原图为 Lab (注意：这里直接用原始 RGB，不混合白色)
             img_lab = sk_color.rgb2lab(rgb_channel / 255.0)
             
             flat_img = img_lab.reshape(-1, 3)
             
+            # 分块计算防止内存溢出
             indices = []
             chunk_size = 2000 
             for i in range(0, len(flat_img), chunk_size):
@@ -221,7 +220,6 @@ def create_quantized_grid_numpy(image, palette_dict, dithering=True, alpha_thres
             for idx_flat, palette_idx in enumerate(indices):
                 y, x = divmod(idx_flat, w)
                 
-                # 【核心修复】严格过滤透明度
                 if alpha_channel[y, x] < alpha_threshold:
                     result_grid[y][x] = None
                     continue
